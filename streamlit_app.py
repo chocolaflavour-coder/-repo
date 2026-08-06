@@ -17,12 +17,17 @@ try:
         
         # إذا كان المفتاح الملصوق لا يحتوي على الترويسة الرسمية، نقوم بتركيبها برمجياً
         if "-----BEGIN PRIVATE KEY-----" not in key:
-            key = f"-----BEGIN PRIVATE KEY-----\n{key}\n-----END PRIVATE KEY-----\n"
+                 key = key.replace("\n", "\n").replace('', '').replace('', '')
+
             
         creds_dict["private_key"] = key
     
     # 2. الاتصال الفعلي بجوجل
-    scopes = ["https://googleapis.com", "https://googleapis.com"]
+   scopes = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     
