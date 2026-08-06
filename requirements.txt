@@ -1,0 +1,6 @@
+streamlit
+gspread
+google-auth
+opencv-python-headless
+pyzbar
+numpy
