@@ -1,27 +1,33 @@
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
-import re
 
 st.title("🧪 اختبار الاتصال البسيط بجوجل شيت")
 
-# 🔗 الحيلة الذكية: وضع رابط الشيت كاملاً، وسيتكفل الكود باستخراج المعرف لحل مشكلة الـ 404
-FULL_SHEET_URL = "https://google.com"
-
 try:
-    # 1. جلب وتنظيف الـ Secrets
+    # 1. جلب البيانات من الـ Secrets بنجاح
     creds_dict = dict(st.secrets["gcp_service_account"])
+    GOOGLE_SHEET_ID = st.secrets["sheet_id"]
     
+    # 🛠️ الحيلة السحرية: تنظيف المفتاح وتركيب الترويسة الرسمية آلياً لتفادي خطأ الـ InvalidHeader
     if "private_key" in creds_dict:
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        key = creds_dict["private_key"].strip()
+        # تنظيف أي علامات تنصيص أو أسطر مائلة زائدة
+        key = key.replace("\\n", "\n").replace('"', '').replace("'", "")
+        
+        # إذا كان المفتاح الملصوق لا يحتوي على الترويسة الرسمية، نقوم بتركيبها برمجياً
+        if "-----BEGIN PRIVATE KEY-----" not in key:
+            key = f"-----BEGIN PRIVATE KEY-----\n{key}\n-----END PRIVATE KEY-----\n"
+            
+        creds_dict["private_key"] = key
     
-    # 2. الاتصال بـ Google
+    # 2. الاتصال الفعلي بجوجل
     scopes = ["https://googleapis.com", "https://googleapis.com"]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     
-    # 3. فتح الملف باستخدام الرابط الكامل مباشرة
-    sheet = client.open_by_url(FULL_SHEET_URL)
+    # 3. فتح الملف وقراءة أول خلية
+    sheet = client.open_by_key(GOOGLE_SHEET_ID)
     products_sheet = sheet.worksheet("المنتجات")
     first_value = products_sheet.acell('A1').value
     
