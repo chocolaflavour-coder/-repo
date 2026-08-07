@@ -1,5 +1,6 @@
 import os
 import json
+from pathlib import Path
 import streamlit as st
 import pandas as pd
 import gspread
@@ -17,6 +18,22 @@ st.write(
     "هذا التطبيق يبحث في ورقة `المنتجات` حسب الباركود أو اسم المنتج، "
     "ثم يطلب تاريخ انتهاء صلاحية والكمية ويضيف صفًا جديدًا إلى ورقة `التحديثات`."
 )
+
+
+def normalize_private_key(creds_dict):
+    private_key = creds_dict.get("private_key")
+    if not isinstance(private_key, str):
+        return creds_dict
+
+    private_key = private_key.replace("\\r\\n", "\\n")
+    private_key = private_key.replace("\\r", "\\n")
+    private_key = private_key.replace("\\n", "\n")
+    private_key = private_key.replace("-----BEGIN PRIVATE KEY-----/", "-----BEGIN PRIVATE KEY-----\n")
+    private_key = private_key.replace("/-----END PRIVATE KEY-----", "\n-----END PRIVATE KEY-----")
+    private_key = private_key.replace("-----END PRIVATE KEY-----/", "-----END PRIVATE KEY-----\n")
+    private_key = private_key.replace("\n\n", "\n")
+    creds_dict["private_key"] = private_key
+    return creds_dict
 
 
 def get_gspread_client():
@@ -47,12 +64,13 @@ def get_gspread_client():
 
     if creds_dict is not None:
         try:
+            creds_dict = normalize_private_key(creds_dict)
             credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
             return gspread.authorize(credentials)
         except Exception as e:
             st.warning(
                 "تعذّر استخدام بيانات الاعتماد من Streamlit secrets. "
-                "سأحاول استخدام المصدر المحلي أو متغير البيئة إذا كان متاحًا."
+                "الرجاء التأكد من أن private_key داخل secrets هو PEM صالح مع \n في نهاية كل سطر."
             )
             st.write(f"تفاصيل الخطأ: {e}")
 
@@ -68,20 +86,31 @@ def get_gspread_client():
                 f"الخطأ: {e}"
             )
 
-    service_account_path = os.path.join(os.path.dirname(__file__), 'service_account.json')
-    if os.path.exists(service_account_path):
-        try:
-            return gspread.service_account(filename=service_account_path, scopes=scopes)
-        except Exception as e:
-            st.error(
-                "تم العثور على service_account.json لكن فشل تحميل بيانات الاعتماد. "
-                f"الخطأ: {e}"
-            )
-            return None
+    project_dir = Path(__file__).resolve().parent
+    possible_files = [
+        project_dir / 'service_account.json',
+        project_dir / 'key.json',
+        project_dir / 'credentials.json',
+        project_dir / '.streamlit' / 'secrets.toml',
+    ]
+
+    for file_path in possible_files:
+        if file_path.exists():
+            if file_path.suffix == '.toml':
+                continue
+            try:
+                return gspread.service_account(filename=str(file_path), scopes=scopes)
+            except Exception as e:
+                st.error(
+                    f"تم العثور على {file_path.name} لكن فشل تحميل بيانات الاعتماد. "
+                    f"الخطأ: {e}"
+                )
+                return None
 
     st.error(
-        "يرجى إضافة بيانات حساب الخدمة إلى .streamlit/secrets.toml تحت gcp_service_account "
-        "أو وضع ملف JSON الخاص بحساب الخدمة باسم service_account.json في مجلد المشروع."
+        "لم تُوجد بيانات اعتماد Google Sheets. على Streamlit Cloud، أضف JSON حساب الخدمة عبر Secrets "
+        "ضمن المفتاح gcp_service_account أو service_account_json. "
+        "إذا كنت تشغّل محلياً، ضع ملف service_account.json في مجلد المشروع."
     )
     return None
 
