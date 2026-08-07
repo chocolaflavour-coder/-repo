@@ -1,8 +1,4 @@
 streamlit
 gspread
 google-auth
-opencv-python-headless
-pyzbar
-numpy
-st-theme
-streamlit-gsheets
+pandas
