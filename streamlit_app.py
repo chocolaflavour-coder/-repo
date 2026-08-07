@@ -4,6 +4,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
+from streamlit.errors import StreamlitSecretNotFoundError
 from datetime import datetime
 
 st.title("🧪 إدارة تحديثات المنتجات من Google Sheets")
@@ -25,19 +26,49 @@ def get_gspread_client():
     ]
 
     creds_dict = None
-    if "gcp_service_account" in st.secrets:
-        creds_dict = st.secrets["gcp_service_account"]
-    elif "type" in st.secrets and st.secrets["type"] == "service_account":
-        creds_dict = dict(st.secrets)
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds_dict = st.secrets["gcp_service_account"]
+        elif "service_account_json" in st.secrets:
+            try:
+                creds_dict = json.loads(st.secrets["service_account_json"])
+            except Exception:
+                creds_dict = None
+        elif "type" in st.secrets and st.secrets["type"] == "service_account":
+            creds_dict = dict(st.secrets)
+        elif all(key in st.secrets for key in [
+            "type", "project_id", "private_key", "client_email",
+            "auth_uri", "token_uri", "auth_provider_x509_cert_url",
+            "client_x509_cert_url"
+        ]):
+            creds_dict = dict(st.secrets)
+    except StreamlitSecretNotFoundError:
+        creds_dict = None
 
     if creds_dict is not None:
         try:
             credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
             return gspread.authorize(credentials)
-        except Exception:
-            pass
+        except Exception as e:
+            st.warning(
+                "تعذّر استخدام بيانات الاعتماد من Streamlit secrets. "
+                "سأحاول استخدام المصدر المحلي أو متغير البيئة إذا كان متاحًا."
+            )
+            st.write(f"تفاصيل الخطأ: {e}")
 
-    service_account_path = os.path.join('.', 'service_account.json')
+    env_json = os.environ.get("SERVICE_ACCOUNT_JSON") or os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if env_json:
+        try:
+            creds_dict = json.loads(env_json)
+            credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            return gspread.authorize(credentials)
+        except Exception as e:
+            st.warning(
+                "تعذّر استخدام بيانات الاعتماد من متغير البيئة SERVICE_ACCOUNT_JSON. "
+                f"الخطأ: {e}"
+            )
+
+    service_account_path = os.path.join(os.path.dirname(__file__), 'service_account.json')
     if os.path.exists(service_account_path):
         try:
             return gspread.service_account(filename=service_account_path, scopes=scopes)
