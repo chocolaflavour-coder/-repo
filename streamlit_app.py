@@ -126,6 +126,20 @@ def append_update_row(worksheet, row_values):
     worksheet.append_row(row_values, value_input_option="USER_ENTERED")
 
 
+# --- Debug helper (اختياري) ---
+# إذا أردت التحقق من كيف يقرأ Streamlit secrets، فكّ التعليق عن الأسطر التالية مؤقتًا:
+# st.write("=== Debug: st.secrets keys ===")
+# st.write(list(st.secrets.keys()))
+# if "PRIVATE_KEY" in st.secrets:
+#     pk = st.secrets["PRIVATE_KEY"]
+#     st.write("PRIVATE_KEY type:", type(pk).__name__)
+#     st.write("PRIVATE_KEY length:", len(pk))
+#     st.code(repr(pk)[:500])
+#     st.write("Startswith BEGIN:", pk.strip().startswith("-----BEGIN PRIVATE KEY-----"))
+#     st.write("Endswith END:", pk.strip().endswith("-----END PRIVATE KEY-----"))
+# else:
+#     st.write("PRIVATE_KEY not found in st.secrets")
+
 client = get_gspread_client()
 if client is not None:
     try:
