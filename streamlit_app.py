@@ -112,7 +112,6 @@ def test_local_files():
                 # نقرأ الملف ونحاول التفويض عبر gspread.service_account
                 st.write("قراءة الملف ومحاولة التفويض عبر gspread.service_account(...)")
                 client = gspread.service_account(filename=str(p), scopes=SCOPES)
-                # محاولة فتح قائمة جداول بسيطة (لا تعرض بيانات حساسة)
                 st.success(f"✅ نجح التفويض باستخدام الملف المحلي: {p.name}")
             except Exception:
                 st.error(f"❌ فشل استخدام الملف {p.name}")
