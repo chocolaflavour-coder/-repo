@@ -19,8 +19,8 @@ st.write(
     "ثم يطلب تاريخ انتهاء صلاحية والكمية ويضيف صفًا جديدًا إلى ورقة `التحديثات`."
 )
 
-# ملاحظة: لا نعدّل private_key هنا إطلاقًا. Streamlit secrets يجب أن يحتوي على المفتاح كسطر واحد
-# مع رموز \n داخل النص، وليس كسطور متعددة.
+# ملاحظة مهمة: لا تقم بتعديل private_key في الكود.
+# في Streamlit Secrets يجب أن يكون PRIVATE_KEY كسطر واحد مع رموز \n داخل النص.
 
 def get_gspread_client():
     scopes = [
@@ -38,9 +38,8 @@ def get_gspread_client():
         elif "service_account_json" in st.secrets:
             try:
                 creds_dict = json.loads(st.secrets["service_account_json"])
-            except Exception as e:
+            except Exception:
                 creds_dict = None
-                st.warning("تعذّر تحليل service_account_json من Streamlit secrets.")
 
         # 3) دعم الشكل التقليدي: مفاتيح منفصلة في st.secrets (type == service_account)
         elif "type" in st.secrets and st.secrets["type"] == "service_account":
@@ -65,7 +64,7 @@ def get_gspread_client():
         except Exception as e:
             st.warning(
                 "تعذّر استخدام بيانات الاعتماد من Streamlit secrets. "
-                "تأكد أن القيم في secrets صحيحة وأن PRIVATE_KEY محفوظ كسطر واحد مع \\n داخل النص."
+                "تأكد أن PRIVATE_KEY محفوظ كسطر واحد مع \\n داخل النص."
             )
             st.write(f"تفاصيل الخطأ: {e}")
 
@@ -78,9 +77,133 @@ def get_gspread_client():
             return gspread.authorize(credentials)
         except Exception as e:
             st.warning(
-                "تعذّر استخدام بيانات الاعتماد من متغير البيئة SERVICE_ACCOUNT_JSON."
+                "تعذّر استخدام بيانات الاعتماد من متغير البيئة SERVICE_ACCOUNT_JSON. "
+                f"الخطأ: {e}"
             )
-            st.write(f"الخطأ: {e}")
 
     # محاولة العثور على ملفات محلية (للتشغيل المحلي)
     try:
+        project_dir = Path(__file__).resolve().parent
+    except Exception:
+        project_dir = Path.cwd()
+
+    possible_files = [
+        project_dir / 'service_account.json',
+        project_dir / 'key.json',
+        project_dir / 'credentials.json',
+        project_dir / '.streamlit' / 'secrets.toml',
+    ]
+
+    for file_path in possible_files:
+        if file_path.exists():
+            # نتجنب محاولة تحميل ملف TOML كـ JSON
+            if file_path.suffix == '.toml':
+                continue
+            try:
+                # gspread.service_account سيقرأ الملف JSON مباشرة
+                return gspread.service_account(filename=str(file_path), scopes=scopes)
+            except Exception as e:
+                st.error(
+                    f"تم العثور على {file_path.name} لكن فشل تحميل بيانات الاعتماد. "
+                    f"الخطأ: {e}"
+                )
+                return None
+
+    st.error(
+        "لم تُوجد بيانات اعتماد Google Sheets. على Streamlit Cloud، أضف JSON حساب الخدمة عبر Secrets "
+        "ضمن المفتاح gcp_service_account أو service_account_json. "
+        "إذا كنت تشغّل محلياً، ضع ملف service_account.json في مجلد المشروع."
+    )
+    return None
+
+
+def load_sheet_dataframe(worksheet):
+    records = worksheet.get_all_records()
+    return pd.DataFrame(records)
+
+
+def append_update_row(worksheet, row_values):
+    worksheet.append_row(row_values, value_input_option="USER_ENTERED")
+
+
+client = get_gspread_client()
+if client is not None:
+    try:
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        product_ws = spreadsheet.worksheet(PRODUCT_SHEET)
+        updates_ws = spreadsheet.worksheet(UPDATES_SHEET)
+
+        df_products = load_sheet_dataframe(product_ws)
+        if df_products.empty:
+            st.warning("ورقة المنتجات فارغة أو لا تحتوي على بيانات.")
+        else:
+            headers = list(df_products.columns)
+            if len(headers) < 2:
+                st.error("ورقة المنتجات يجب أن تحتوي على عمود باركود وعمود اسم المنتج على الأقل.")
+            else:
+                barcode_col = headers[0]
+                product_col = headers[1]
+
+                st.write("### ابحث عن منتج في ورقة المنتجات")
+                st.write(f"عمود الباركود: `{barcode_col}`، عمود اسم المنتج: `{product_col}`")
+
+                barcode_input = st.text_input("ادخل الباركود بدقة (مطابق 100%)")
+                product_input = st.text_input("اكتب اسم المنتج جزئيًا لعرض النتائج")
+
+                search_df = df_products
+                if barcode_input:
+                    search_df = search_df[search_df[barcode_col].astype(str).eq(barcode_input)]
+                if product_input:
+                    search_df = search_df[search_df[product_col].astype(str).str.contains(product_input, case=False, na=False)]
+
+                if not barcode_input and not product_input:
+                    st.info("ابدأ بكتابة الباركود أو اسم المنتج للبحث مباشرة.")
+                    st.session_state.pop("search_results", None)
+                    st.session_state.pop("found_product", None)
+                else:
+                    if search_df.empty:
+                        st.info("لم يتم العثور على نتائج. حاول تعديل البحث.")
+                        st.session_state.pop("search_results", None)
+                        st.session_state.pop("found_product", None)
+                    elif len(search_df) == 1:
+                        product_row = search_df.iloc[0]
+                        st.session_state["found_product"] = product_row.to_dict()
+                        st.session_state.pop("search_results", None)
+                        st.success("تم العثور على المنتج.")
+                    else:
+                        st.session_state["search_results"] = search_df.to_dict("records")
+                        st.session_state.pop("found_product", None)
+
+                if "search_results" in st.session_state:
+                    choices = [f"{row[barcode_col]} - {row[product_col]}" for row in st.session_state["search_results"]]
+                    selected_choice = st.selectbox("النتائج المتطابقة، اختر المنتج المطلوب", choices)
+                    selected_index = choices.index(selected_choice)
+                    selected_row = st.session_state["search_results"][selected_index]
+                    st.session_state["found_product"] = selected_row
+                    st.success("تم اختيار المنتج من النتائج.")
+
+                if "found_product" in st.session_state:
+                    product_row = st.session_state["found_product"]
+                    st.write("### بيانات المنتج")
+                    st.write(product_row)
+
+                    with st.form("update_form"):
+                        expiry_date = st.date_input("تاريخ الانتهاء")
+                        quantity = st.number_input("الكمية", min_value=0, step=1)
+                        submit_update = st.form_submit_button("حفظ التحديث")
+
+                    if submit_update:
+                        update_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        update_row = [
+                            str(product_row[barcode_col]),
+                            str(product_row[product_col]),
+                            expiry_date.isoformat(),
+                            int(quantity),
+                            update_datetime,
+                        ]
+                        append_update_row(updates_ws, update_row)
+                        st.success("تم حفظ التحديث في ورقة التحديثات.")
+                        st.write(update_row)
+                        st.session_state.pop("found_product", None)
+    except Exception as e:
+        st.error(f"حدث خطأ أثناء الاتصال بـ Google Sheets: {e}")
