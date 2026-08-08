@@ -1,221 +1,300 @@
+# ملف تشخيصي كامل لاختبار اتصال Google Sheets تدريجياً على Streamlit
+# انسخ هذا الملف كاملًا والصقه مكان ملف التطبيق مؤقتًا ثم شغّله.
+# لا يغيّر أي secret داخل الكود. هذا ملف تشخيصي فقط.
+
 import os
 import json
+import traceback
 from pathlib import Path
+from datetime import datetime
+
 import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from streamlit.errors import StreamlitSecretNotFoundError
-from datetime import datetime
 
-st.title("🧪 إدارة تحديثات المنتجات من Google Sheets")
+st.set_page_config(page_title="Debug اتصال Google Sheets", layout="wide")
+st.title("🔍 فحوصات تشخيصية اتصال Google Sheets (تدريجي)")
 
-SPREADSHEET_ID = "1MOuwq51Y-Odvn9F7k4C5IVkGBDfPlS-HBUh7fVw6Rok"
-PRODUCT_SHEET = "المنتجات"
-UPDATES_SHEET = "التحديثات"
-
-st.write(
-    "هذا التطبيق يبحث في ورقة `المنتجات` حسب الباركود أو اسم المنتج، "
-    "ثم يطلب تاريخ انتهاء صلاحية والكمية ويضيف صفًا جديدًا إلى ورقة `التحديثات`."
+st.markdown(
+    """
+    **تعليمات سريعة**
+    - هذا الملف مخصّص للتشخيص فقط. انسخه كما هو وأعد تشغيل التطبيق.
+    - لا تضع أو تعرض المفتاح الكامل هنا للعامة. النتائج تعرض `repr` مقتطع للمفتاح فقط.
+    - استخدم الأزرار لتشغيل كل اختبار على حدة أو تشغيل الكل خطوة بخطوة.
+    """
 )
 
-# ملاحظة مهمة: لا تقم بتعديل private_key في الكود.
-# في Streamlit Secrets يجب أن يكون PRIVATE_KEY كسطر واحد مع رموز \n داخل النص.
+# ---------- إعدادات عامة ----------
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
-def get_gspread_client():
-    """
-    تعديل بسيط في أولوية مصادر بيانات الاعتماد:
-    1) أولاً نحاول استخدام ملف محلي (key.json أو service_account.json) — هذا هو المصدر الذي ثبت نجاحه عندك.
-    2) ثم نحاول استخدام st.secrets (gcp_service_account أو service_account_json أو مفاتيح منفصلة).
-    3) ثم نحاول متغيرات البيئة.
-    4) أخيراً نبحث عن ملفات محلية أخرى كاحتياط.
-    لا نعدّل قيمة private_key أبداً في الكود.
-    """
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
+# مسارات ملفات محلية محتملة (الترتيب مهم لاختبار الأولويات)
+try:
+    PROJECT_DIR = Path(__file__).resolve().parent
+except Exception:
+    PROJECT_DIR = Path.cwd()
 
-    # 1) محاولة استخدام ملف محلي معروف أولاً (نجح معك سابقاً)
+LOCAL_CANDIDATES = [
+    PROJECT_DIR / "key.json",
+    PROJECT_DIR / "service_account.json",
+    PROJECT_DIR / "credentials.json",
+]
+
+# ---------- واجهة المستخدم ----------
+st.sidebar.header("خيارات الاختبار")
+force_use = st.sidebar.selectbox(
+    "إجبار مصدر بيانات الاعتماد (اختياري)",
+    options=["لا تجبر", "استخدم ملف محلي أولاً", "استخدم st.secrets أولاً", "استخدم متغير البيئة أولاً"]
+)
+
+run_all = st.sidebar.button("تشغيل كل الاختبارات بالتسلسل")
+run_local_btn = st.sidebar.button("اختبار ملف محلي")
+run_secrets_btn = st.sidebar.button("اختبار st.secrets")
+run_env_btn = st.sidebar.button("اختبار متغير البيئة")
+run_auth_btn = st.sidebar.button("محاولة تفويض gspread (authorize)")
+
+st.markdown("---")
+
+# ---------- أدوات مساعدة ----------
+def short_repr(s: str, max_chars: int = 400):
+    r = repr(s)
+    return r[:max_chars] + ("..." if len(r) > max_chars else "")
+
+def try_from_dict(name: str, creds_dict: dict, show_trace: bool = True):
+    st.write(f"### محاولة إنشاء Credentials من: **{name}**")
     try:
-        project_dir = Path(__file__).resolve().parent
-    except Exception:
-        project_dir = Path.cwd()
+        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+        client = gspread.authorize(creds)
+        st.success(f"✅ نجح الاتصال باستخدام {name}")
+        return True, None
+    except Exception as e:
+        st.error(f"❌ فشل الاتصال باستخدام {name}")
+        if show_trace:
+            st.code(traceback.format_exc())
+        return False, e
 
-    local_candidates = [
-        project_dir / 'key.json',
-        project_dir / 'service_account.json',
-        project_dir / 'credentials.json',
-    ]
+# ---------- فحص st.secrets ----------
+def inspect_secrets():
+    st.subheader("1) فحص st.secrets")
+    keys = list(st.secrets.keys())
+    st.write("مفاتيح st.secrets المتوفرة:", keys)
 
-    for p in local_candidates:
+    if "PRIVATE_KEY" in st.secrets:
+        pk = st.secrets["PRIVATE_KEY"]
+        st.write("نوع PRIVATE_KEY:", type(pk).__name__)
+        st.write("طول PRIVATE_KEY:", len(pk))
+        st.code(short_repr(pk, 800))
+        st.write("يبدأ بـ BEGIN:", pk.strip().startswith("-----BEGIN PRIVATE KEY-----"))
+        st.write("ينتهي بـ END:", pk.strip().endswith("-----END PRIVATE KEY-----"))
+    else:
+        st.info("PRIVATE_KEY غير موجود في st.secrets")
+
+    # دعم أقسام مختلفة
+    if "gcp_service_account" in st.secrets:
+        st.write("- يوجد قسم `gcp_service_account` في st.secrets.")
+    if "service_account_json" in st.secrets:
+        st.write("- يوجد مفتاح `service_account_json` في st.secrets (نص JSON).")
+
+# ---------- اختبار ملف محلي ----------
+def test_local_files():
+    st.subheader("2) اختبار الملفات المحلية (local candidates)")
+    found_any = False
+    for p in LOCAL_CANDIDATES:
+        st.write(f"- فحص: `{p}`")
         if p.exists():
+            found_any = True
+            st.success(f"تم العثور على: {p.name}")
             try:
-                # gspread.service_account سيقرأ الملف JSON مباشرة ويعمل التفويض
-                return gspread.service_account(filename=str(p), scopes=scopes)
-            except Exception as e:
-                # لو فشل ملف محلي، نعرض رسالة وننتقل للمصادر الأخرى
-                st.warning(f"تم العثور على {p.name} لكن فشل تحميل بيانات الاعتماد منه. الخطأ: {e}")
-
-    # 2) محاولة قراءة من st.secrets (بدون أي تعديل على private_key)
-    creds_dict = None
-    try:
-        if "gcp_service_account" in st.secrets:
-            creds_dict = st.secrets["gcp_service_account"]
-        elif "service_account_json" in st.secrets:
-            try:
-                creds_dict = json.loads(st.secrets["service_account_json"])
+                # نقرأ الملف ونحاول التفويض عبر gspread.service_account
+                st.write("قراءة الملف ومحاولة التفويض عبر gspread.service_account(...)")
+                client = gspread.service_account(filename=str(p), scopes=SCOPES)
+                # محاولة فتح قائمة جداول بسيطة (لا تعرض بيانات حساسة)
+                st.success(f"✅ نجح التفويض باستخدام الملف المحلي: {p.name}")
             except Exception:
-                creds_dict = None
-        elif "type" in st.secrets and st.secrets["type"] == "service_account":
-            creds_dict = dict(st.secrets)
-        elif all(key in st.secrets for key in [
-            "type", "project_id", "private_key", "client_email",
-            "auth_uri", "token_uri", "auth_provider_x509_cert_url",
-            "client_x509_cert_url"
-        ]):
-            creds_dict = dict(st.secrets)
-    except StreamlitSecretNotFoundError:
-        creds_dict = None
+                st.error(f"❌ فشل استخدام الملف {p.name}")
+                st.code(traceback.format_exc())
+        else:
+            st.info("غير موجود")
+    if not found_any:
+        st.info("لم يتم العثور على أي ملف محلي من القائمة الافتراضية.")
 
-    if creds_dict is not None:
+# ---------- اختبار st.secrets كمصدر dict/json ----------
+def test_secrets_auth():
+    st.subheader("3) محاولة التفويض من st.secrets")
+    tried = False
+    # 1) قسم gcp_service_account
+    if "gcp_service_account" in st.secrets:
+        tried = True
+        try_from_dict("st.secrets['gcp_service_account']", dict(st.secrets["gcp_service_account"]))
+    # 2) service_account_json كنص
+    if "service_account_json" in st.secrets:
+        tried = True
         try:
-            credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-            return gspread.authorize(credentials)
-        except Exception as e:
-            st.warning(
-                "تعذّر استخدام بيانات الاعتماد من Streamlit secrets. "
-                "تأكد أن PRIVATE_KEY محفوظ كسطر واحد مع \\n داخل النص."
-            )
-            st.write(f"تفاصيل الخطأ: {e}")
+            parsed = json.loads(st.secrets["service_account_json"])
+            try_from_dict("st.secrets['service_account_json']", parsed)
+        except Exception:
+            st.error("service_account_json موجود لكن لا يمكن تحليله كـ JSON.")
+            st.code(traceback.format_exc())
+    # 3) مفاتيح منفصلة (type == service_account)
+    if "type" in st.secrets and st.secrets["type"] == "service_account":
+        tried = True
+        try_from_dict("st.secrets (مفاتيح منفصلة)", dict(st.secrets))
+    # 4) مفاتيح أساسية متفرقة
+    if all(k in st.secrets for k in ["type", "project_id", "private_key", "client_email"]):
+        tried = True
+        try_from_dict("st.secrets (مفاتيح أساسية)", dict(st.secrets))
 
-    # 3) محاولة قراءة من متغيرات البيئة (SERVICE_ACCOUNT_JSON أو GOOGLE_SERVICE_ACCOUNT_JSON)
+    if not tried:
+        st.info("لم يتم العثور على بيانات اعتماد مناسبة داخل st.secrets لاختبارها.")
+
+# ---------- اختبار متغير البيئة ----------
+def test_env_auth():
+    st.subheader("4) محاولة التفويض من متغير البيئة")
     env_json = os.environ.get("SERVICE_ACCOUNT_JSON") or os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
     if env_json:
+        st.write("تم العثور على متغير بيئة يحتوي JSON.")
         try:
-            creds_dict = json.loads(env_json)
-            credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-            return gspread.authorize(credentials)
-        except Exception as e:
-            st.warning(
-                "تعذّر استخدام بيانات الاعتماد من متغير البيئة SERVICE_ACCOUNT_JSON. "
-                f"الخطأ: {e}"
-            )
+            parsed = json.loads(env_json)
+            try_from_dict("ENV SERVICE_ACCOUNT_JSON", parsed)
+        except Exception:
+            st.error("متغير البيئة موجود لكن لا يمكن تحليله كـ JSON.")
+            st.code(traceback.format_exc())
+    else:
+        st.info("لا يوجد متغير بيئة SERVICE_ACCOUNT_JSON أو GOOGLE_SERVICE_ACCOUNT_JSON.")
 
-    # 4) محاولة العثور على ملفات محلية إضافية (كاحتياط)
-    possible_files = [
-        project_dir / '.streamlit' / 'secrets.toml',
-    ]
-
-    for file_path in possible_files:
-        if file_path.exists():
-            # نتجنب محاولة تحميل ملف TOML كـ JSON
-            if file_path.suffix == '.toml':
-                continue
-            try:
-                return gspread.service_account(filename=str(file_path), scopes=scopes)
-            except Exception as e:
-                st.error(
-                    f"تم العثور على {file_path.name} لكن فشل تحميل بيانات الاعتماد. "
-                    f"الخطأ: {e}"
-                )
-                return None
-
-    st.error(
-        "لم تُوجد بيانات اعتماد Google Sheets. على Streamlit Cloud، أضف JSON حساب الخدمة عبر Secrets "
-        "ضمن المفتاح gcp_service_account أو service_account_json. "
-        "إذا كنت تشغّل محلياً، ضع ملف key.json أو service_account.json في مجلد المشروع."
-    )
-    return None
-
-
-def load_sheet_dataframe(worksheet):
-    records = worksheet.get_all_records()
-    return pd.DataFrame(records)
-
-
-def append_update_row(worksheet, row_values):
-    worksheet.append_row(row_values, value_input_option="USER_ENTERED")
-
-
-client = get_gspread_client()
-if client is not None:
-    try:
-        spreadsheet = client.open_by_key(SPREADSHEET_ID)
-        product_ws = spreadsheet.worksheet(PRODUCT_SHEET)
-        updates_ws = spreadsheet.worksheet(UPDATES_SHEET)
-
-        df_products = load_sheet_dataframe(product_ws)
-        if df_products.empty:
-            st.warning("ورقة المنتجات فارغة أو لا تحتوي على بيانات.")
+# ---------- اختبار تفويض gspread مباشر من dict (مستخدم عند الضغط) ----------
+def test_authorize_from_dict_input():
+    st.subheader("5) تجربة تفويض سريع من JSON مُدخل (اختياري)")
+    st.write("يمكنك لصق JSON حساب الخدمة هنا (مؤقتًا) لاختبار التفويض. لا تضع المفتاح الكامل للعامة.")
+    json_input = st.text_area("لصق JSON هنا (اختياري)", height=160)
+    if st.button("جرب التفويض من JSON المُلصق"):
+        if not json_input.strip():
+            st.warning("لم تُدخل JSON للاختبار.")
         else:
-            headers = list(df_products.columns)
-            if len(headers) < 2:
-                st.error("ورقة المنتجات يجب أن تحتوي على عمود باركود وعمود اسم المنتج على الأقل.")
+            try:
+                parsed = json.loads(json_input)
+                try_from_dict("JSON المُلصق من المستخدم", parsed)
+            except Exception:
+                st.error("النص المدخل ليس JSON صالحًا.")
+                st.code(traceback.format_exc())
+
+# ---------- تنفيذ الاختبارات حسب الأزرار أو تشغيل الكل ----------
+def run_sequence():
+    st.info("تشغيل سلسلة الاختبارات: local -> secrets -> env")
+    test_local_files()
+    test_secrets_auth()
+    test_env_auth()
+    st.success("انتهت سلسلة الاختبارات.")
+
+# تنفيذ حسب اختيار المستخدم
+if run_all:
+    run_sequence()
+
+if run_local_btn:
+    test_local_files()
+
+if run_secrets_btn:
+    inspect_secrets()
+    test_secrets_auth()
+
+if run_env_btn:
+    test_env_auth()
+
+if run_auth_btn:
+    # محاولة تفويض سريع: نجرّب المصادر بالترتيب الذي حدده المستخدم في sidebar (أو الافتراضي)
+    st.subheader("محاولة تفويض سريعة حسب أولوية المصادر")
+    order = []
+    if force_use == "استخدم ملف محلي أولاً":
+        order = ["local", "secrets", "env"]
+    elif force_use == "استخدم st.secrets أولاً":
+        order = ["secrets", "local", "env"]
+    elif force_use == "استخدم متغير البيئة أولاً":
+        order = ["env", "secrets", "local"]
+    else:
+        order = ["local", "secrets", "env"]
+
+    st.write("أولوية المحاولة:", order)
+
+    success = False
+    # local
+    if "local" in order and not success:
+        for p in LOCAL_CANDIDATES:
+            if p.exists():
+                st.write(f"محاولة من الملف المحلي: {p.name}")
+                try:
+                    client = gspread.service_account(filename=str(p), scopes=SCOPES)
+                    st.success(f"نجح التفويض باستخدام الملف المحلي: {p.name}")
+                    success = True
+                    break
+                except Exception:
+                    st.error(f"فشل استخدام الملف {p.name}")
+                    st.code(traceback.format_exc())
+    # secrets
+    if "secrets" in order and not success:
+        st.write("محاولة من st.secrets...")
+        try:
+            creds_dict = None
+            if "gcp_service_account" in st.secrets:
+                creds_dict = st.secrets["gcp_service_account"]
+            elif "service_account_json" in st.secrets:
+                try:
+                    creds_dict = json.loads(st.secrets["service_account_json"])
+                except Exception:
+                    creds_dict = None
+            elif "type" in st.secrets and st.secrets["type"] == "service_account":
+                creds_dict = dict(st.secrets)
+            elif all(key in st.secrets for key in [
+                "type", "project_id", "private_key", "client_email",
+                "auth_uri", "token_uri", "auth_provider_x509_cert_url",
+                "client_x509_cert_url"
+            ]):
+                creds_dict = dict(st.secrets)
+
+            if creds_dict is not None:
+                ok, err = try_from_dict("st.secrets (محاولة سريعة)", creds_dict)
+                success = ok
             else:
-                barcode_col = headers[0]
-                product_col = headers[1]
+                st.info("لم يتم العثور على بيانات اعتماد مناسبة داخل st.secrets.")
+        except Exception:
+            st.error("حدث خطأ أثناء محاولة استخدام st.secrets.")
+            st.code(traceback.format_exc())
 
-                st.write("### ابحث عن منتج في ورقة المنتجات")
-                st.write(f"عمود الباركود: `{barcode_col}`، عمود اسم المنتج: `{product_col}`")
+    # env
+    if "env" in order and not success:
+        st.write("محاولة من متغير البيئة...")
+        env_json = os.environ.get("SERVICE_ACCOUNT_JSON") or os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+        if env_json:
+            try:
+                parsed = json.loads(env_json)
+                ok, err = try_from_dict("ENV SERVICE_ACCOUNT_JSON", parsed)
+                success = ok
+            except Exception:
+                st.error("متغير البيئة موجود لكن لا يمكن تحليله كـ JSON.")
+                st.code(traceback.format_exc())
+        else:
+            st.info("لا يوجد متغير بيئة SERVICE_ACCOUNT_JSON أو GOOGLE_SERVICE_ACCOUNT_JSON.")
 
-                barcode_input = st.text_input("ادخل الباركود بدقة (مطابق 100%)")
-                product_input = st.text_input("اكتب اسم المنتج جزئيًا لعرض النتائج")
+    if success:
+        st.balloons()
+    else:
+        st.warning("لم ينجح التفويض من أي مصدر. راجع المخرجات أعلاه للتفاصيل.")
 
-                search_df = df_products
-                if barcode_input:
-                    search_df = search_df[search_df[barcode_col].astype(str).eq(barcode_input)]
-                if product_input:
-                    search_df = search_df[search_df[product_col].astype(str).str.contains(product_input, case=False, na=False)]
+# ---------- قسم معلومات إضافية وتعليمات إصلاح سريعة ----------
+st.markdown("---")
+st.subheader("نصائح سريعة إذا فشل التفويض من st.secrets")
+st.markdown(
+    """
+- **تأكد من تنسيق PRIVATE_KEY في Streamlit Secrets**: يجب أن يكون كسطر واحد مع `\\n` داخل النص، مثال:
+  `PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\\nMIIC...==\\n-----END PRIVATE KEY-----\\n"`
+- **لا تقم بتحويل `\\n` إلى أسطر فعلية** عند اللصق في واجهة Secrets.
+- **احذف أي دوال في الكود تعدّل قيمة `private_key`** (مثل `replace("\\n", "\\n")` أو `normalize_private_key`).
+- بعد تعديل Secrets اضغط Save وانتظر دقيقة أو دقيقتين ثم أعد تحميل التطبيق.
+- إذا استمر الخطأ، جرّب توليد مفتاح جديد من Google Cloud وأعد رفعه إلى Secrets.
+"""
+)
 
-                if not barcode_input and not product_input:
-                    st.info("ابدأ بكتابة الباركود أو اسم المنتج للبحث مباشرة.")
-                    st.session_state.pop("search_results", None)
-                    st.session_state.pop("found_product", None)
-                else:
-                    if search_df.empty:
-                        st.info("لم يتم العثور على نتائج. حاول تعديل البحث.")
-                        st.session_state.pop("search_results", None)
-                        st.session_state.pop("found_product", None)
-                    elif len(search_df) == 1:
-                        product_row = search_df.iloc[0]
-                        st.session_state["found_product"] = product_row.to_dict()
-                        st.session_state.pop("search_results", None)
-                        st.success("تم العثور على المنتج.")
-                    else:
-                        st.session_state["search_results"] = search_df.to_dict("records")
-                        st.session_state.pop("found_product", None)
-
-                if "search_results" in st.session_state:
-                    choices = [f"{row[barcode_col]} - {row[product_col]}" for row in st.session_state["search_results"]]
-                    selected_choice = st.selectbox("النتائج المتطابقة، اختر المنتج المطلوب", choices)
-                    selected_index = choices.index(selected_choice)
-                    selected_row = st.session_state["search_results"][selected_index]
-                    st.session_state["found_product"] = selected_row
-                    st.success("تم اختيار المنتج من النتائج.")
-
-                if "found_product" in st.session_state:
-                    product_row = st.session_state["found_product"]
-                    st.write("### بيانات المنتج")
-                    st.write(product_row)
-
-                    with st.form("update_form"):
-                        expiry_date = st.date_input("تاريخ الانتهاء")
-                        quantity = st.number_input("الكمية", min_value=0, step=1)
-                        submit_update = st.form_submit_button("حفظ التحديث")
-
-                    if submit_update:
-                        update_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        update_row = [
-                            str(product_row[barcode_col]),
-                            str(product_row[product_col]),
-                            expiry_date.isoformat(),
-                            int(quantity),
-                            update_datetime,
-                        ]
-                        append_update_row(updates_ws, update_row)
-                        st.success("تم حفظ التحديث في ورقة التحديثات.")
-                        st.write(update_row)
-                        st.session_state.pop("found_product", None)
-    except Exception as e:
-        st.error(f"حدث خطأ أثناء الاتصال بـ Google Sheets: {e}")
+st.caption(f"تشغيل الفحص: {datetime.now().isoformat()}")
