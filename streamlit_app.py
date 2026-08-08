@@ -8,6 +8,28 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from streamlit.errors import StreamlitSecretNotFoundError
+# save as check_syntax.py ثم شغّل: python check_syntax.py
+import ast, sys
+
+fname = "streamlit_app.py"
+with open(fname, "r", encoding="utf-8") as f:
+    src = f.read()
+
+try:
+    ast.parse(src)
+    print("لا توجد أخطاء نحوية (AST parse ناجح).")
+except SyntaxError as e:
+    print("SyntaxError:", e)
+    lineno = e.lineno or 0
+    start = max(1, lineno-6)
+    end = lineno+6
+    lines = src.splitlines()
+    print(f"\nعرض الأسطر من {start} إلى {end}:")
+    for i in range(start, min(end, len(lines))+1):
+        prefix = ">>" if i==lineno else "  "
+        print(f"{prefix} {i:03d}: {lines[i-1]}")
+    sys.exit(1)
+
 
 # ----------------- إعداد الصفحة -----------------
 st.set_page_config(page_title="🧪 إدارة تحديثات المنتجات من Google Sheets", layout="wide")
