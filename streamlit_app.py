@@ -4,9 +4,10 @@ import re
 from google.auth.exceptions import GoogleAuthError
 from google.oauth2 import service_account
 import gspread
+import queue
 import streamlit as st
-from PIL import Image
 import zxingcpp
+from streamlit_webrtc import webrtc_streamer
 
 # -------------------- تهيئة الصفحة وتنسيق الواجهة (CSS) --------------------
 st.set_page_config(
@@ -254,6 +255,32 @@ def cancel_edit_callback():
     st.session_state.pop("manual_qty_input", None)
 
 
+def make_video_frame_callback(result_queue):
+    """(جديد) يبني دالة تُستدعى تلقائيًا على كل إطار فيديو من الكاميرا،
+    تحلّل الإطار بحثًا عن أي باركود (كل الأنواع: QR وغيره ثنائي الأبعاد،
+    وكذلك EAN/UPC/Code128 وغيره أحادي الأبعاد) وتضعه في طابور مشترك
+    ليقرأه السكربت الرئيسي فورًا دون الحاجة لضغط أي زر."""
+    frame_counter = {"i": 0}
+
+    def video_frame_callback(frame):
+        frame_counter["i"] += 1
+        # نفحص كل 3 إطارات فقط لتخفيف الحمل على المعالج والحفاظ على سلاسة الفيديو
+        if frame_counter["i"] % 3 == 0:
+            img = frame.to_ndarray(format="bgr24")
+            try:
+                results = zxingcpp.read_barcodes(img)
+            except Exception:
+                results = []
+            if results:
+                try:
+                    result_queue.put_nowait(results[0].text)
+                except queue.Full:
+                    pass
+        return frame
+
+    return video_frame_callback
+
+
 def run_text_search_callback():
     st.session_state["chosen_row"] = None
     st.session_state["last_update"] = None
@@ -278,6 +305,8 @@ if "show_camera" not in st.session_state:
     st.session_state["show_camera"] = False
 if "search_barcode_input" not in st.session_state:
     st.session_state["search_barcode_input"] = ""
+if "barcode_queue" not in st.session_state:
+    st.session_state["barcode_queue"] = queue.Queue(maxsize=5)
 
 # -------------------- الواجهة الرئيسية (صفحة واحدة فقط) --------------------
 st.title("📱 إدارة وتحديث المنتجات")
@@ -308,35 +337,48 @@ if not st.session_state.get("chosen_row"):
             use_container_width=True,
         )
 
-    # -------------------- (إصلاح) قارئ باركود مبسّط --------------------
-    # بدل الاعتماد على مكتبة JS خارجية وإعادة تحميل الصفحة (كانت تفشل بسبب
-    # قيود الـ sandbox في iframe الخاص بـ Streamlit)، نستخدم st.camera_input
-    # المدمج، ونفك تشفير الباركود من الصورة مباشرة على السيرفر بمكتبة pyzbar.
-    # المستخدم يلتقط صورة واحدة والنتيجة تظهر فورًا بدون أي تعقيد.
+    # -------------------- (جديد) سكان مباشر تلقائي بدون ضغط زر --------------------
+    # نستخدم streamlit-webrtc لفتح فيديو مباشر من الكاميرا، ونحلل الإطارات
+    # لحظيًا بمكتبة zxingcpp التي تدعم كل أنواع الباركود (ثنائي الأبعاد مثل
+    # QR/DataMatrix، وأحادي الأبعاد مثل EAN/UPC/Code128) بدون أي إعداد إضافي.
+    # بمجرد اكتشاف أي باركود، يُنفَّذ البحث تلقائيًا فورًا دون أي تدخل من المستخدم.
     if st.session_state.get("show_camera"):
-        st.caption("📷 وجّه الكاميرا نحو الباركود والتقط صورة واضحة:")
-        camera_photo = st.camera_input(
-            "التقاط صورة الباركود", label_visibility="collapsed"
-        )
-        if camera_photo is not None:
-            try:
-                image = Image.open(camera_photo)
-                found = zxingcpp.read_barcodes(image)
-            except Exception as e:
-                found = []
-                st.error("تعذّرت معالجة الصورة: " + str(e))
+        st.caption("📷 وجّه الكاميرا نحو الباركود — سيتم اكتشافه وقراءته تلقائيًا:")
 
-            if found:
-                scanned_val = found[0].text
+        webrtc_ctx = webrtc_streamer(
+            key="barcode-live-scanner",
+            video_frame_callback=make_video_frame_callback(
+                st.session_state["barcode_queue"]
+            ),
+            media_stream_constraints={
+                "video": {"facingMode": {"ideal": "environment"}},
+                "audio": False,
+            },
+            rtc_configuration={
+                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+            },
+        )
+
+        if webrtc_ctx.state.playing:
+            status_placeholder = st.empty()
+            status_placeholder.info("📡 جاري البحث عن باركود تلقائيًا...")
+            scanned_val = None
+            # حلقة انتظار قصيرة تفحص الطابور المشترك مع الفيديو المباشر،
+            # دون الحاجة لأي rerun أو تدخل من المستخدم
+            while webrtc_ctx.state.playing:
+                try:
+                    scanned_val = st.session_state["barcode_queue"].get(
+                        timeout=1.0
+                    )
+                except queue.Empty:
+                    continue
+                break
+
+            if scanned_val:
                 st.session_state["search_barcode_input"] = scanned_val
                 st.session_state["show_camera"] = False
-                st.success(f"🎯 تم قراءة الباركود: **{scanned_val}**")
+                status_placeholder.success(f"🎯 تم قراءة الباركود: **{scanned_val}**")
                 search_products(q_barcode=scanned_val)
-            else:
-                st.warning(
-                    "لم يتم التعرف على أي باركود في الصورة. حاول تقريب "
-                    "الكاميرا أو تحسين الإضاءة والتقط صورة أخرى."
-                )
 
     # حقل البحث باسم المنتج
     st.text_input("اسم المنتج (بحث جزئي)", key="search_name_input")
