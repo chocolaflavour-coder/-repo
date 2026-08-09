@@ -2,5 +2,7 @@ streamlit
 gspread
 google-auth
 pandas
+streamlit-webrtc
+av
 zxing-cpp
 Pillow
