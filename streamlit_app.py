@@ -45,28 +45,20 @@ def get_gspread_client():
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    try:
-        creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
-        return gspread.authorize(creds)
-    except GoogleAuthError as gae:
-        raise RuntimeError("خطأ في المصادقة: " + str(gae))
-    except Exception as e:
-        raise RuntimeError("فشل إنشاء عميل gspread: " + str(e))
+    creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+    return gspread.authorize(creds)
 
 # -------------------- فتح شيت المنتجات --------------------
 def open_products_sheet():
     gc = get_gspread_client()
     try:
         sh = gc.open("المنتجات")
-    except Exception as e:
+    except Exception:
         sheet_key = st.secrets.get("TEST_SHEET_ID")
         if sheet_key:
-            try:
-                sh = gc.open_by_key(sheet_key)
-            except Exception as e2:
-                raise RuntimeError("فشل فتح الشيت باسم 'المنتجات' وبالمفتاح: " + str(e2))
+            sh = gc.open_by_key(sheet_key)
         else:
-            raise RuntimeError("فشل فتح الشيت باسم 'المنتجات' ولم يتم توفير TEST_SHEET_ID. الخطأ: " + str(e))
+            raise RuntimeError("لم أجد ملف 'المنتجات' ولم يتم توفير TEST_SHEET_ID.")
     ws = sh.get_worksheet(0)
     all_values = ws.get_all_values()
     header = all_values[0] if len(all_values) >= 1 else []
@@ -78,10 +70,7 @@ def get_updates_sheet_in_same_spreadsheet(sh):
     try:
         ws_updates = sh.worksheet("التحديثات")
     except Exception:
-        try:
-            ws_updates = sh.add_worksheet(title="التحديثات", rows="2000", cols="10")
-        except Exception as e:
-            raise RuntimeError("تعذر إنشاء ورقة 'التحديثات' داخل ملف 'المنتجات': " + str(e))
+        ws_updates = sh.add_worksheet(title="التحديثات", rows="2000", cols="10")
     try:
         headers = ws_updates.row_values(1)
     except Exception:
@@ -93,10 +82,7 @@ def get_updates_sheet_in_same_spreadsheet(sh):
                 ws_updates.delete_rows(1)
         except Exception:
             pass
-        try:
-            ws_updates.insert_row(expected, index=1)
-        except Exception as e:
-            raise RuntimeError("تعذر إدراج رؤوس الأعمدة في ورقة 'التحديثات': " + str(e))
+        ws_updates.insert_row(expected, index=1)
     return ws_updates
 
 # -------------------- مساعدة تقسيم الباركودات --------------------
@@ -124,7 +110,7 @@ if st.session_state.get("last_update"):
     st.write(f"**الكمية:** {lu.get('qty','')}")
     st.markdown("---")
 
-# -------------------- واجهة البحث البسيطة --------------------
+# -------------------- واجهة البحث --------------------
 st.header("ابحث بالباركود أو باسم المنتج")
 col1, col2 = st.columns(2)
 with col1:
@@ -203,7 +189,7 @@ if st.button("بحث"):
             st.session_state["sh_id"] = sh.id
             st.success("تم العثور على المنتج — يمكنك الآن تحديثه أدناه")
 
-# -------------------- عرض حقول التحديث البسيطة (تظهر فقط بعد البحث) --------------------
+# -------------------- عرض حقول التحديث (تظهر فقط بعد البحث) --------------------
 if st.session_state.get("chosen_row"):
     try:
         gc = get_gspread_client()
@@ -282,8 +268,6 @@ if st.session_state.get("chosen_row"):
             if "sh_id" in st.session_state:
                 del st.session_state["sh_id"]
 
-            # لا نستخدم experimental_rerun؛ نعرض الرسالة أعلاه في بداية الصفحة تلقائياً
-            st.experimental_rerun() if hasattr(st, "experimental_rerun") else None
-
+            # لا نستخدم experimental_rerun؛ الصفحة ستعرض رسالة التحديث السابق أعلاه تلقائياً
         except Exception as e:
             st.exception(e)
