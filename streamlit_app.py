@@ -5,11 +5,6 @@ import gspread
 import base64
 from google.auth.exceptions import GoogleAuthError
 import re
-from PIL import Image
-from io import BytesIO
-
-# مكتبة فك الباركود
-from pyzbar.pyzbar import decode as zbar_decode
 
 st.set_page_config(page_title="بحث المنتجات", layout="centered")
 st.title("بحث المنتجات")
@@ -86,93 +81,45 @@ def split_barcodes(cell_text):
     parts = re.split(r"\s+", cleaned.strip())
     return [p for p in parts if p]
 
-# --- دالة لفك الباركود من صورة (تدعم عدة باركودات في صورة واحدة) ---
-def decode_barcodes_from_image(image_bytes):
-    try:
-        img = Image.open(BytesIO(image_bytes)).convert("RGB")
-    except Exception:
-        return []
-    decoded = zbar_decode(img)
-    results = []
-    for d in decoded:
-        # d.data هو bytes
-        try:
-            text = d.data.decode("utf-8")
-        except Exception:
-            text = d.data.decode(errors="ignore")
-        results.append(text)
-    return results
-
 st.header("ابحث بالباركود أو باسم المنتج")
 
-# حقل الباركود مرتبط بالـ session_state حتى نملأه من الكاميرا
-if "barcode_input" not in st.session_state:
-    st.session_state["barcode_input"] = ""
-
-col1, col2 = st.columns([2, 3])
+col1, col2 = st.columns(2)
 with col1:
-    # حقل الباركود قابل للتعديل ويأخذ القيمة من session_state
-    barcode_input = st.text_input("باركود (مطابق 100%)", value=st.session_state["barcode_input"], key="barcode_input")
-    # زر مسح الحقل
-    if st.button("مسح الباركود"):
-        st.session_state["barcode_input"] = ""
+    barcode_input = st.text_input("باركود (مطابق 100%)")
 with col2:
     name_input = st.text_input("اسم المنتج (بحث جزئي)")
 
-# --- كاميرا: تلتقط صورة وتُرسل للخادم لفك الباركود ---
-st.markdown("**مسح بالكاميرا**")
-camera_file = st.camera_input("اضغط لالتقاط صورة لمسح الباركود")
-
-# إذا التقط المستخدم صورة، حاول فك الباركودات منها
-if camera_file is not None:
-    image_bytes = camera_file.getvalue()
-    found = decode_barcodes_from_image(image_bytes)
-    if not found:
-        st.warning("لم يتم العثور على باركود في الصورة. جرّب تصوير الباركود أو تكبيره أكثر.")
-    else:
-        # عرض كل الباركودات المكتشفة واختر واحداً لملء الحقل
-        st.success(f"تم العثور على {len(found)} باركود في الصورة.")
-        # إزالة تكرارات مع الحفاظ على الترتيب
-        seen = []
-        for f in found:
-            if f not in seen:
-                seen.append(f)
-        # عرض قائمة للاختيار
-        chosen = st.selectbox("اختر الباركود لملئه في الحقل:", options=seen)
-        if st.button("استخدم الباركود المختار"):
-            st.session_state["barcode_input"] = chosen
-            st.experimental_rerun()  # إعادة تشغيل لتحديث الحقل المعروض
-
-# --- زر البحث الرئيسي ---
 if st.button("بحث"):
-    if (not st.session_state["barcode_input"] or not st.session_state["barcode_input"].strip()) and (not name_input or not name_input.strip()):
+    if (not barcode_input or not barcode_input.strip()) and (not name_input or not name_input.strip()):
         st.info("الرجاء إدخال باركود أو اسم المنتج ثم اضغط بحث.")
     else:
         try:
             ws, header, rows, sh = open_products_sheet()
-            q_barcode = st.session_state["barcode_input"].strip()
+            q_barcode = barcode_input.strip()
             q_name = name_input.strip().lower()
 
+            # افتراض: العمود A = باركود (index 0)، العمود B = اسم المنتج (index 1)
             BARCODE_IDX = 0
             NAME_IDX = 1
 
             exact_barcode_matches = []
             name_matches = []
 
-            for idx, row in enumerate(rows, start=2):
+            for idx, row in enumerate(rows, start=2):  # start=2 لأننا تجاهلنا رأس العمود
                 cell_barcode = row[BARCODE_IDX] if len(row) > BARCODE_IDX else ""
                 cell_name = row[NAME_IDX] if len(row) > NAME_IDX else ""
-                # باركود: قارن كل جزء داخل الخلية
+                # باركود: مطابقة 100% أو إذا الخلية تحتوي على عدة باركودات مفصولة بمسافة
                 if q_barcode and cell_barcode:
                     parts = split_barcodes(cell_barcode)
                     for part in parts:
                         if q_barcode == part:
                             exact_barcode_matches.append((idx, row))
                             break
-                # اسم: تطابق جزئي
+                # اسم: تطابق جزئي غير حساس لحالة الأحرف
                 if q_name and cell_name and q_name in cell_name.lower():
                     name_matches.append((idx, row))
 
+            # عرض النتائج حسب الأولوية: باركود أولاً
             if exact_barcode_matches:
                 st.success(f"تم العثور على {len(exact_barcode_matches)} نتيجة مطابقة للباركود (مطابقة 100%).")
                 for r_idx, r in exact_barcode_matches:
