@@ -205,42 +205,61 @@ if st.button("بحث"):
                     new_expiry = st.date_input("تاريخ الصلاحية (اختر التاريخ)", value=datetime.today().date())
                     submit_update = st.form_submit_button("تطبيق التحديث")
 
-                    if submit_update:
-                        try:
-                            # تحديث الشيت الأصلي (المنتجات)
-                            # تحويل التاريخ إلى نص بصيغة YYYY-MM-DD
-                            expiry_str = new_expiry.strftime("%Y-%m-%d")
-                            # تحديث خلية التاريخ والكمية (تحقق من وجود الأعمدة)
-                            try:
-                                ws.update_cell(row_idx, EXPIRY_IDX + 1, expiry_str)
-                            except Exception as e:
-                                st.warning("تعذر تحديث تاريخ الصلاحية في الشيت الأصلي: " + str(e))
-                            try:
-                                ws.update_cell(row_idx, QTY_IDX + 1, str(new_qty))
-                            except Exception as e:
-                                st.warning("تعذر تحديث الكمية في الشيت الأصلي: " + str(e))
+              # --- مقطع تشخيصي: استبدل به الجزء الذي يقوم بالتحديث داخل submit_update ---
+if submit_update:
+    try:
+        # تحضير القيم
+        expiry_str = new_expiry.strftime("%Y-%m-%d")
+        new_qty_str = str(new_qty)
 
-                            # الآن سجل التحديث في شيت "التحديثات"
-                            ws_updates = get_updates_sheet(gc)
-                            # خذ قيمة الباركود كاملة من الخلية (قد تحتوي على عدة باركودات)
-                            barcode_cell_value = current_barcode_cell
-                            # إذا لم تكن القيمة موجودة في row_values (لأننا قرأنا row_values من ws.row_values) حاول قراءتها مباشرة
-                            if not barcode_cell_value:
-                                try:
-                                    barcode_cell_value = ws.cell(row_idx, BARCODE_IDX + 1).value or ""
-                                except Exception:
-                                    barcode_cell_value = ""
+        st.info(f"محاولة تحديث صف {row_idx} -> تاريخ: {expiry_str}، كمية: {new_qty_str}")
 
-                            update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            new_row = [barcode_cell_value, current_name, expiry_str, str(new_qty), update_time]
-                            try:
-                                ws_updates.append_row(new_row, value_input_option="USER_ENTERED")
-                                st.success("تم تحديث المنتج وتسجيل التحديث في شيت 'التحديثات'.")
-                            except Exception as e:
-                                st.error("تم تحديث الشيت الأصلي لكن فشل تسجيل السجل في شيت 'التحديثات': " + str(e))
+        # اقرأ القيم الحالية من الخلايا قبل التحديث لعرضها
+        try:
+            before_row = ws.row_values(row_idx)
+            st.write("قيم الصف قبل التحديث:", before_row)
+        except Exception as e:
+            st.warning("تعذر قراءة الصف قبل التحديث: " + str(e))
 
-                        except Exception as e:
-                            st.error("حدث خطأ أثناء عملية التحديث: " + str(e))
+        # تحديث تاريخ الصلاحية
+        try:
+            ws.update_cell(row_idx, EXPIRY_IDX + 1, expiry_str)
+            st.success("تم تحديث تاريخ الصلاحية في الشيت الأصلي.")
+        except Exception as e:
+            st.error("فشل تحديث تاريخ الصلاحية: " + str(e))
+            raise
+
+        # تحديث الكمية
+        try:
+            ws.update_cell(row_idx, QTY_IDX + 1, new_qty_str)
+            st.success("تم تحديث الكمية في الشيت الأصلي.")
+        except Exception as e:
+            st.error("فشل تحديث الكمية: " + str(e))
+            raise
+
+        # اقرأ الصف بعد التحديث للتأكد
+        try:
+            after_row = ws.row_values(row_idx)
+            st.write("قيم الصف بعد التحديث:", after_row)
+        except Exception as e:
+            st.warning("تعذر قراءة الصف بعد التحديث: " + str(e))
+
+        # سجل التحديث في شيت "التحديثات"
+        try:
+            ws_updates = get_updates_sheet(gc)
+            barcode_cell_value = current_barcode_cell or ws.cell(row_idx, BARCODE_IDX + 1).value or ""
+            update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            new_row = [barcode_cell_value, current_name, expiry_str, new_qty_str, update_time]
+            ws_updates.append_row(new_row, value_input_option="USER_ENTERED")
+            st.success("تم تسجيل التحديث في شيت 'التحديثات'.")
+        except Exception as e:
+            st.error("فشل تسجيل السجل في شيت 'التحديثات': " + str(e))
+            # لا نرفع هنا لأن التحديث الأصلي قد يكون نجح
+
+    except Exception as e:
+        # عرض الاستثناء الكامل للمساعدة في التشخيص
+        st.exception(e)
+
 
         except RuntimeError as re:
             st.error("حدث خطأ أثناء الاتصال بالشيت أو أثناء البحث: " + str(re))
