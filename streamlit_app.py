@@ -5,9 +5,10 @@ import gspread
 import base64
 from google.auth.exceptions import GoogleAuthError
 import re
+from datetime import datetime
 
-st.set_page_config(page_title="بحث المنتجات", layout="centered")
-st.title("بحث المنتجات")
+st.set_page_config(page_title="إدارة المنتجات - تحديث", layout="centered")
+st.title("بحث وتحديث المنتجات")
 
 # --- قراءة المفتاح (يدعم multiline أو Base64) ---
 def load_private_key():
@@ -53,7 +54,7 @@ def get_gspread_client():
     except Exception as e:
         raise RuntimeError("فشل إنشاء عميل gspread: " + str(e))
 
-# --- فتح جدول باسم "المنتجات" وجلب البيانات (تجاهل رأس العمود) ---
+# --- فتح شيت المنتجات وجلب البيانات (تجاهل رأس العمود) ---
 def open_products_sheet():
     gc = get_gspread_client()
     try:
@@ -71,7 +72,29 @@ def open_products_sheet():
     all_values = ws.get_all_values()
     header = all_values[0] if len(all_values) >= 1 else []
     rows = all_values[1:] if len(all_values) >= 2 else []
-    return ws, header, rows, sh
+    return gc, sh, ws, header, rows
+
+# --- فتح أو إنشاء شيت التحديثات والتأكد من رؤوس الأعمدة ---
+def get_updates_sheet(gc):
+    try:
+        sh_updates = gc.open("التحديثات")
+    except Exception:
+        # إذا لم يوجد ملف باسم "التحديثات" حاول إنشاء ملف جديد
+        sh_updates = gc.create("التحديثات")
+    try:
+        ws_updates = sh_updates.get_worksheet(0)
+    except Exception:
+        ws_updates = sh_updates.add_worksheet(title="Sheet1", rows="1000", cols="10")
+    # تأكد من وجود رؤوس الأعمدة في الصف الأول
+    headers = ws_updates.row_values(1)
+    expected = ["الباركود", "اسم المنتج", "تاريخ الصلاحية", "الكمية", "وقت التحديث"]
+    if not headers or len(headers) < len(expected) or headers[:len(expected)] != expected:
+        try:
+            ws_updates.delete_rows(1)  # حذف الصف الأول إن كان غير مناسب
+        except Exception:
+            pass
+        ws_updates.insert_row(expected, index=1)
+    return ws_updates
 
 # --- دالة تقسيم الباركودات داخل خلية (تفصل على مسافات وفواصل شائعة) ---
 def split_barcodes(cell_text):
@@ -81,6 +104,7 @@ def split_barcodes(cell_text):
     parts = re.split(r"\s+", cleaned.strip())
     return [p for p in parts if p]
 
+# --- واجهة البحث والاختيار ---
 st.header("ابحث بالباركود أو باسم المنتج")
 
 col1, col2 = st.columns(2)
@@ -94,13 +118,14 @@ if st.button("بحث"):
         st.info("الرجاء إدخال باركود أو اسم المنتج ثم اضغط بحث.")
     else:
         try:
-            ws, header, rows, sh = open_products_sheet()
+            gc, sh, ws, header, rows = open_products_sheet()
             q_barcode = barcode_input.strip()
             q_name = name_input.strip().lower()
 
-            # افتراض: العمود A = باركود (index 0)، العمود B = اسم المنتج (index 1)
-            BARCODE_IDX = 0
-            NAME_IDX = 1
+            BARCODE_IDX = 0  # عمود A
+            NAME_IDX = 1     # عمود B
+            EXPIRY_IDX = 2   # عمود C (تاريخ الصلاحية)
+            QTY_IDX = 3      # عمود D (الكمية)
 
             exact_barcode_matches = []
             name_matches = []
@@ -108,7 +133,7 @@ if st.button("بحث"):
             for idx, row in enumerate(rows, start=2):  # start=2 لأننا تجاهلنا رأس العمود
                 cell_barcode = row[BARCODE_IDX] if len(row) > BARCODE_IDX else ""
                 cell_name = row[NAME_IDX] if len(row) > NAME_IDX else ""
-                # باركود: مطابقة 100% أو إذا الخلية تحتوي على عدة باركودات مفصولة بمسافة
+                # باركود: قارن كل جزء داخل الخلية
                 if q_barcode and cell_barcode:
                     parts = split_barcodes(cell_barcode)
                     for part in parts:
@@ -121,14 +146,31 @@ if st.button("بحث"):
 
             # عرض النتائج حسب الأولوية: باركود أولاً
             if exact_barcode_matches:
-                st.success(f"تم العثور على {len(exact_barcode_matches)} نتيجة مطابقة للباركود (مطابقة 100%).")
-                for r_idx, r in exact_barcode_matches:
-                    st.markdown(f"**صف {r_idx}**")
+                st.success(f"تم العثور على {len(exact_barcode_matches)} نتيجة مطابقة للباركود.")
+                # إذا أكثر من نتيجة، اعرضها للاختيار
+                if len(exact_barcode_matches) == 1:
+                    selected_row_idx, selected_row = exact_barcode_matches[0]
+                    st.markdown(f"**المنتج المختار: صف {selected_row_idx}**")
+                    # عرض تفاصيل الصف
                     display = {}
-                    for col_i, cell in enumerate(r, start=1):
+                    for col_i, cell in enumerate(selected_row, start=1):
                         col_name = header[col_i-1] if len(header) >= col_i else f"عمود {col_i}"
                         display[col_name] = cell
                     st.table([display])
+                    chosen = (selected_row_idx, selected_row)
+                else:
+                    options = []
+                    for r_idx, r in exact_barcode_matches:
+                        nm = r[NAME_IDX] if len(r) > NAME_IDX else "(بدون اسم)"
+                        bc = r[BARCODE_IDX] if len(r) > BARCODE_IDX else ""
+                        options.append(f"صف {r_idx} - {nm} - باركود: {bc}")
+                    choice = st.selectbox("اختر المنتج من النتائج المطابقة:", options)
+                    if choice:
+                        chosen_row_idx = int(choice.split("-")[0].strip().split()[1])
+                        chosen_row = ws.row_values(chosen_row_idx)
+                        chosen = (chosen_row_idx, chosen_row)
+                    else:
+                        chosen = None
             elif name_matches:
                 st.success(f"تم العثور على {len(name_matches)} نتيجة تطابق بالاسم.")
                 options = []
@@ -136,21 +178,70 @@ if st.button("بحث"):
                     nm = r[NAME_IDX] if len(r) > NAME_IDX else "(بدون اسم)"
                     bc = r[BARCODE_IDX] if len(r) > BARCODE_IDX else ""
                     options.append(f"صف {r_idx} - {nm} - باركود: {bc}")
-                choice = st.selectbox("اختر المنتج لعرض التفاصيل:", options)
+                choice = st.selectbox("اختر المنتج من النتائج:", options)
                 if choice:
-                    try:
-                        chosen_row_idx = int(choice.split("-")[0].strip().split()[1])
-                        row_values = ws.row_values(chosen_row_idx)
-                        display = {}
-                        for col_i, cell in enumerate(row_values, start=1):
-                            col_name = header[col_i-1] if len(header) >= col_i else f"عمود {col_i}"
-                            display[col_name] = cell
-                        st.markdown(f"**تفاصيل المنتج في صف {chosen_row_idx}:**")
-                        st.table([display])
-                    except Exception as ex:
-                        st.error("حدث خطأ أثناء عرض تفاصيل المنتج: " + str(ex))
+                    chosen_row_idx = int(choice.split("-")[0].strip().split()[1])
+                    chosen_row = ws.row_values(chosen_row_idx)
+                    chosen = (chosen_row_idx, chosen_row)
+                else:
+                    chosen = None
             else:
                 st.info("لم يتم العثور على نتائج مطابقة.")
+                chosen = None
+
+            # إذا تم اختيار منتج، اعرض نموذج التحديث
+            if chosen:
+                row_idx, row_values = chosen
+                # استخرج القيم الحالية إن وجدت
+                current_barcode_cell = row_values[BARCODE_IDX] if len(row_values) > BARCODE_IDX else ""
+                current_name = row_values[NAME_IDX] if len(row_values) > NAME_IDX else ""
+                current_expiry = row_values[EXPIRY_IDX] if len(row_values) > EXPIRY_IDX else ""
+                current_qty = row_values[QTY_IDX] if len(row_values) > QTY_IDX else ""
+
+                st.markdown("### تحديث الكمية وتاريخ الصلاحية")
+                with st.form("update_product_form"):
+                    # افتراض أن المستخدم يريد إدخال تاريخ صلاحية جديد وكمية جديدة
+                    new_qty = st.number_input("الكمية الجديدة", min_value=0, step=1, value=int(current_qty) if current_qty.isdigit() else 0)
+                    new_expiry = st.date_input("تاريخ الصلاحية (اختر التاريخ)", value=datetime.today().date())
+                    submit_update = st.form_submit_button("تطبيق التحديث")
+
+                    if submit_update:
+                        try:
+                            # تحديث الشيت الأصلي (المنتجات)
+                            # تحويل التاريخ إلى نص بصيغة YYYY-MM-DD
+                            expiry_str = new_expiry.strftime("%Y-%m-%d")
+                            # تحديث خلية التاريخ والكمية (تحقق من وجود الأعمدة)
+                            try:
+                                ws.update_cell(row_idx, EXPIRY_IDX + 1, expiry_str)
+                            except Exception as e:
+                                st.warning("تعذر تحديث تاريخ الصلاحية في الشيت الأصلي: " + str(e))
+                            try:
+                                ws.update_cell(row_idx, QTY_IDX + 1, str(new_qty))
+                            except Exception as e:
+                                st.warning("تعذر تحديث الكمية في الشيت الأصلي: " + str(e))
+
+                            # الآن سجل التحديث في شيت "التحديثات"
+                            ws_updates = get_updates_sheet(gc)
+                            # خذ قيمة الباركود كاملة من الخلية (قد تحتوي على عدة باركودات)
+                            barcode_cell_value = current_barcode_cell
+                            # إذا لم تكن القيمة موجودة في row_values (لأننا قرأنا row_values من ws.row_values) حاول قراءتها مباشرة
+                            if not barcode_cell_value:
+                                try:
+                                    barcode_cell_value = ws.cell(row_idx, BARCODE_IDX + 1).value or ""
+                                except Exception:
+                                    barcode_cell_value = ""
+
+                            update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            new_row = [barcode_cell_value, current_name, expiry_str, str(new_qty), update_time]
+                            try:
+                                ws_updates.append_row(new_row, value_input_option="USER_ENTERED")
+                                st.success("تم تحديث المنتج وتسجيل التحديث في شيت 'التحديثات'.")
+                            except Exception as e:
+                                st.error("تم تحديث الشيت الأصلي لكن فشل تسجيل السجل في شيت 'التحديثات': " + str(e))
+
+                        except Exception as e:
+                            st.error("حدث خطأ أثناء عملية التحديث: " + str(e))
+
         except RuntimeError as re:
             st.error("حدث خطأ أثناء الاتصال بالشيت أو أثناء البحث: " + str(re))
             st.info("تأكد أن: 1) تم تمكين Google Sheets API، 2) تمت مشاركة الشيت مع client_email، 3) القيم في Streamlit Secrets صحيحة.")
