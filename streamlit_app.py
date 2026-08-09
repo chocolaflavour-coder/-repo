@@ -7,8 +7,8 @@ from google.auth.exceptions import GoogleAuthError
 import re
 from datetime import datetime
 
-st.set_page_config(page_title="إدارة المنتجات - تحديث", layout="centered")
-st.title("بحث وتحديث المنتجات")
+st.set_page_config(page_title="إدارة المنتجات - تحديث (إضافة صف جديد)", layout="centered")
+st.title("بحث وتحديث المنتجات (إضافة صف جديد)")
 
 # -------------------- مفاتيح وتهيئة --------------------
 def load_private_key():
@@ -87,7 +87,6 @@ def get_updates_sheet(gc):
     expected = ["الباركود", "اسم المنتج", "تاريخ الصلاحية", "الكمية", "وقت التحديث"]
     if headers[:len(expected)] != expected:
         try:
-            # حذف الصف الأول إن وجد ثم إدراج الرؤوس الصحيحة
             if headers:
                 ws_updates.delete_rows(1)
         except Exception:
@@ -126,7 +125,7 @@ if st.button("بحث"):
         q_barcode = barcode_input.strip()
         q_name = name_input.strip().lower()
 
-        # افتراضات الأعمدة في شيت المنتجات
+        # افتراضات الأعمدة في شيت المنتجات (للقراءة)
         BARCODE_IDX = 0  # A
         NAME_IDX = 1     # B
         EXPIRY_IDX = 2   # C
@@ -197,65 +196,61 @@ if st.button("بحث"):
             current_expiry = row_values[EXPIRY_IDX] if len(row_values) > EXPIRY_IDX else ""
             current_qty = row_values[QTY_IDX] if len(row_values) > QTY_IDX else ""
 
-            st.markdown("### تحديث الكمية وتاريخ الصلاحية")
+            st.markdown("### تحديث الكمية وتاريخ الصلاحية (سيتم إضافة صف جديد في شيت المنتجات)")
             with st.form("update_product_form"):
-                # تعامل آمن مع current_qty غير الرقمي
                 try:
                     default_qty = int(current_qty) if str(current_qty).strip().isdigit() else 0
                 except Exception:
                     default_qty = 0
                 new_qty = st.number_input("الكمية الجديدة", min_value=0, step=1, value=default_qty)
                 new_expiry = st.date_input("تاريخ الصلاحية (اختر التاريخ)", value=datetime.today().date())
-                submit_update = st.form_submit_button("تطبيق التحديث")
+                submit_update = st.form_submit_button("تطبيق التحديث (إضافة صف جديد)")
 
                 if submit_update:
-                    # مقطع تشخيصي مفصّل
                     try:
                         expiry_str = new_expiry.strftime("%Y-%m-%d")
                         new_qty_str = str(new_qty)
-                        st.info(f"محاولة تحديث صف {row_idx} -> تاريخ: {expiry_str}، كمية: {new_qty_str}")
+                        st.info(f"محاولة إضافة صف جديد في شيت 'المنتجات' -> تاريخ: {expiry_str}، كمية: {new_qty_str}")
 
-                        # قراءة الصف قبل التحديث
+                        # قراءة عدد الصفوف الحالي لتحديد الصف التالي المتاح
                         try:
-                            before_row = ws.row_values(row_idx)
-                            st.write("قيم الصف قبل التحديث:", before_row)
+                            all_vals = ws.get_all_values()
+                            next_row_index = len(all_vals) + 1  # الصف التالي المتاح (1-indexed)
+                            st.write(f"الصف التالي المتاح في 'المنتجات' هو: {next_row_index}")
                         except Exception as e:
-                            st.warning("تعذر قراءة الصف قبل التحديث: " + str(e))
+                            st.warning("تعذر الحصول على عدد الصفوف في شيت المنتجات: " + str(e))
+                            next_row_index = None
 
-                        # تحديث تاريخ الصلاحية
+                        # قيمة الباركود التي سنضعها في الصف الجديد (نأخذ الخلية كاملة كما هي)
+                        barcode_cell_value = current_barcode_cell or ""
+                        # صف جديد نضيفه إلى شيت المنتجات: [باركود, اسم, تاريخ صلاحية, كمية]
+                        new_product_row = [barcode_cell_value, current_name, expiry_str, new_qty_str]
+
+                        # أضف صفًا جديدًا في شيت المنتجات (append_row)
                         try:
-                            ws.update_cell(row_idx, EXPIRY_IDX + 1, expiry_str)
-                            st.success("تم تحديث تاريخ الصلاحية في الشيت الأصلي.")
+                            ws.append_row(new_product_row, value_input_option="USER_ENTERED")
+                            st.success("تم إضافة صف جديد في شيت 'المنتجات'.")
                         except Exception as e:
-                            st.error("فشل تحديث تاريخ الصلاحية: " + str(e))
+                            st.error("فشل إضافة صف جديد في شيت 'المنتجات': " + str(e))
                             raise
-
-                        # تحديث الكمية
-                        try:
-                            ws.update_cell(row_idx, QTY_IDX + 1, new_qty_str)
-                            st.success("تم تحديث الكمية في الشيت الأصلي.")
-                        except Exception as e:
-                            st.error("فشل تحديث الكمية: " + str(e))
-                            raise
-
-                        # قراءة الصف بعد التحديث
-                        try:
-                            after_row = ws.row_values(row_idx)
-                            st.write("قيم الصف بعد التحديث:", after_row)
-                        except Exception as e:
-                            st.warning("تعذر قراءة الصف بعد التحديث: " + str(e))
 
                         # تسجيل التحديث في شيت "التحديثات"
                         try:
                             ws_updates = get_updates_sheet(gc)
-                            barcode_cell_value = current_barcode_cell or ws.cell(row_idx, BARCODE_IDX + 1).value or ""
                             update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            new_row = [barcode_cell_value, current_name, expiry_str, new_qty_str, update_time]
-                            ws_updates.append_row(new_row, value_input_option="USER_ENTERED")
+                            new_update_row = [barcode_cell_value, current_name, expiry_str, new_qty_str, update_time]
+                            ws_updates.append_row(new_update_row, value_input_option="USER_ENTERED")
                             st.success("تم تسجيل التحديث في شيت 'التحديثات'.")
                         except Exception as e:
-                            st.error("تم تحديث الشيت الأصلي لكن فشل تسجيل السجل في شيت 'التحديثات': " + str(e))
+                            st.error("تم إضافة الصف في 'المنتجات' لكن فشل تسجيل السجل في 'التحديثات': " + str(e))
+
+                        # عرض حالة نهائية: قراءة آخر صف مضاف في المنتجات للتأكيد (محاولة)
+                        try:
+                            all_vals_after = ws.get_all_values()
+                            last_row = all_vals_after[-1] if all_vals_after else []
+                            st.write("آخر صف في 'المنتجات' بعد الإضافة:", last_row)
+                        except Exception as e:
+                            st.warning("تعذر قراءة آخر صف بعد الإضافة: " + str(e))
 
                     except Exception as e:
-                        # عرض الاستثناء الكامل للمساعدة في التشخيص
                         st.exception(e)
