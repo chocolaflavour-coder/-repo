@@ -15,18 +15,18 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* إخفاء القوائم الهامشية لتبدو مثل التطبيق */
+    /* إخفاء القوائم الهامشية */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
     
-    /* تنسيق المحاذاة بين حقل الباركود وأيقونة الكاميرا */
+    /* تنسيق محاذاة حقل الباركود وزر الكاميرا على الجوال */
     div[data-testid="stHorizontalBlock"] {
         align-items: flex-end !important;
         gap: 8px !important;
     }
     
-    /* تصميم بطاقات النتائج للجوال */
+    /* تصميم بطاقات نتائج البحث */
     .product-card {
         background-color: #f8f9fa;
         border-radius: 12px;
@@ -53,7 +53,7 @@ st.markdown(
 )
 
 
-# -------------------- المصادقة والاتصال مع Google Sheets --------------------
+# -------------------- الاتصال بـ Google Sheets --------------------
 def load_private_key():
     pk = st.secrets.get("PRIVATE_KEY")
     if pk:
@@ -166,7 +166,6 @@ def parse_existing_date(date_str):
 
 
 def search_products(q_barcode="", q_name=""):
-    """دالة تنفيذ البحث في جوجل شيت"""
     q_barcode = str(q_barcode).strip()
     q_name = str(q_name).strip().lower()
 
@@ -252,7 +251,7 @@ if "show_camera" not in st.session_state:
 if "search_barcode_input" not in st.session_state:
     st.session_state["search_barcode_input"] = ""
 
-# -------------------- التقاط الباركود من الكاميرا --------------------
+# -------------------- التقاط الباركود الممسوح من الكاميرا --------------------
 if hasattr(st, "query_params"):
     scanned_val = st.query_params.get("scanned_code")
     if scanned_val:
@@ -273,10 +272,10 @@ else:
         st.session_state["show_camera"] = False
         st.session_state["auto_scanned_barcode"] = scanned_val
 
-# -------------------- الواجهة الرئيسية (صفحة واحدة فقط) --------------------
+# -------------------- الواجهة الرئيسية --------------------
 st.title("📱 إدارة وتحديث المنتجات")
 
-# عرض رسالة نجاح التحديث السابق إن وجد
+# عرض رسالة نجاح التحديث
 if st.session_state.get("last_update"):
     lu = st.session_state["last_update"]
     st.success("✅ تم تحديث بيانات المنتج بنجاح!")
@@ -289,7 +288,6 @@ if st.session_state.get("last_update"):
 if not st.session_state.get("chosen_row"):
     st.markdown("### 🔍 البحث عن منتج")
 
-    # حقل الباركود وبجانبه زر الكاميرا مباشرة
     col_bc, col_cam = st.columns([80, 20])
     with col_bc:
         st.text_input("الباركود (مطابق 100%)", key="search_barcode_input")
@@ -298,46 +296,68 @@ if not st.session_state.get("chosen_row"):
             "📷",
             key="toggle_cam_btn",
             on_click=toggle_camera_callback,
-            help="افتح الكاميرا لمسح الباركود",
+            help="افتح كاميرا الجوال لمسح الباركود",
             use_container_width=True,
         )
 
-    # شاشة الكاميرا (تظهر مباشرة تحت حقل الباركود عند الضغط على الأيقونة)
+    # مكون الكاميرا المخصص ومتوافق 100% مع Safari و iOS
     if st.session_state.get("show_camera"):
-        st.caption("📷 وجه كاميرا الجوال نحو الباركود لقراءته تلقائياً:")
+        st.caption(
+            "📷 اضغط على الزر الأزرق أدناه لفتح كاميرا آيفون مباشرة لالتقاط الباركود:"
+        )
         scanner_code = """
-        <div id="reader" style="width: 100%; max-width: 400px; margin: auto;"></div>
         <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+        
+        <div style="text-align: center; margin: 10px 0;">
+            <label for="qr-file-input" style="
+                background-color: #007bff; 
+                color: white; 
+                padding: 14px 20px; 
+                border-radius: 10px; 
+                font-weight: bold; 
+                display: block; 
+                cursor: pointer;
+                font-size: 16px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            ">
+                📸 فتح كاميرا الجوال لالتقاط الباركود
+            </label>
+            <input type="file" id="qr-file-input" accept="image/*" capture="environment" style="display: none;" onchange="scanBarcodeImage(this)">
+            <div id="scan-status" style="margin-top:10px; font-size:14px; font-weight:bold; color:#333;"></div>
+        </div>
+        <div id="reader-hidden" style="display:none;"></div>
+
         <script>
-            function onScanSuccess(decodedText) {
+            function scanBarcodeImage(input) {
+                if (!input.files || input.files.length === 0) return;
+                const file = input.files[0];
+                const statusDiv = document.getElementById('scan-status');
+                statusDiv.innerHTML = "⏳ جاري قراءة الباركود...";
+                
                 try {
-                    html5QrcodeScanner.clear();
-                    const url = new URL(window.parent.location.href);
-                    url.searchParams.set('scanned_code', decodedText);
-                    window.parent.location.search = url.searchParams.toString();
+                    const html5QrCode = new Html5Qrcode("reader-hidden");
+                    html5QrCode.scanFile(file, false)
+                        .then(decodedText => {
+                            statusDiv.innerHTML = "✅ تم القراءة: " + decodedText;
+                            const url = new URL(window.parent.location.href);
+                            url.searchParams.set('scanned_code', decodedText);
+                            window.parent.location.search = url.searchParams.toString();
+                        })
+                        .catch(err => {
+                            statusDiv.innerHTML = "❌ تعذر قراءة الباركود. يرجى التقاط صورة أقرب وأوضح للباركود.";
+                        });
                 } catch(e) {
-                    console.error("خطأ الكاميرا: ", e);
+                    statusDiv.innerHTML = "❌ حدث خطأ أثناء التحليل: " + e.message;
                 }
             }
-
-            let html5QrcodeScanner = new Html5QrcodeScanner(
-                "reader",
-                { 
-                    fps: 15, 
-                    qrbox: {width: 250, height: 150},
-                    rememberLastUsedCamera: true
-                },
-                false
-            );
-            html5QrcodeScanner.render(onScanSuccess);
         </script>
         """
-        components.html(scanner_code, height=360)
+        components.html(scanner_code, height=130)
 
-    # حقل البحث باسم المنتج
+    # حقل اسم المنتج
     st.text_input("اسم المنتج (بحث جزئي)", key="search_name_input")
 
-    # زر البحث الرئيسي
+    # زر البحث
     st.button(
         "🔍 بحث عن منتج",
         on_click=run_text_search_callback,
@@ -345,7 +365,7 @@ if not st.session_state.get("chosen_row"):
         type="primary",
     )
 
-# تنفيذ البحث الآلي فور التقاط الباركود بالكاميرا
+# تنفيذ البحث الآلي عند التقاط الباركود
 if st.session_state.get("auto_scanned_barcode"):
     scanned_bc = st.session_state.pop("auto_scanned_barcode")
     st.success(f"🎯 تم مسح الباركود بنجاح: **{scanned_bc}**")
@@ -381,7 +401,7 @@ if matches and not st.session_state.get("chosen_row"):
         )
         st.write("")
 
-# -------------------- واجهة التحديث والتعديل --------------------
+# -------------------- واجهة التحديث --------------------
 if st.session_state.get("chosen_row"):
     row_idx, row_values = st.session_state["chosen_row"]
     BARCODE_IDX, NAME_IDX, EXPIRY_IDX, QTY_IDX = 0, 1, 2, 3
@@ -463,10 +483,8 @@ if st.session_state.get("chosen_row"):
                 expiry_str = new_expiry.strftime("%Y-%m-%d")
                 new_qty_str = str(new_qty)
 
-                # تحديث C و D بطلب واحد (Batch Update)
                 ws.update(f"C{row_idx}:D{row_idx}", [[expiry_str, new_qty_str]])
 
-                # تسجيل العمليات في شيت التحديثات
                 ws_updates = get_updates_sheet_in_same_spreadsheet(sh)
                 sa_time = datetime.now(timezone(timedelta(hours=3)))
                 update_time = sa_time.strftime("%Y-%m-%d %H:%M:%S")
