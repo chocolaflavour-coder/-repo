@@ -193,6 +193,7 @@ if st.button("بحث"):
                     label = f"صف {r_idx} - {nm} - باركود: {bc}"
                     options.append(label)
                     options_map[label] = r_idx
+                # مفتاح فريد يعتمد على uuid لضمان عدم تداخل الحالة
                 sel_key = f"select_barcode_{uuid.uuid4().hex}"
                 sel = st.selectbox("اختر المنتج من النتائج المطابقة:", options, key=sel_key)
                 if sel:
@@ -310,15 +311,14 @@ if st.session_state.get("chosen_row"):
             if "sh_id" in st.session_state:
                 del st.session_state["sh_id"]
 
-            # أعد تحميل الصفحة بطريقة آمنة:
+            # أعد تحميل الصفحة بطريقة آمنة إن كانت متاحة
             if hasattr(st, "experimental_rerun"):
                 try:
                     st.experimental_rerun()
                 except Exception:
-                    # إذا فشل، استخدم تغيير query params لفرض إعادة تحميل
-                    st.experimental_set_query_params(_refresh=uuid.uuid4().hex)
-            else:
-                st.experimental_set_query_params(_refresh=uuid.uuid4().hex)
+                    # إذا فشلت experimental_rerun لأي سبب، نعتمد على إعادة تشغيل عادية (ستحدث تلقائياً بعد التفاعل)
+                    pass
+            # لا نستخدم experimental_set_query_params لتجنب مشاكل بيئات Streamlit المختلفة
 
         except Exception as e:
             st.exception(e)
