@@ -3,8 +3,6 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
-  <!-- مكتبة قراءة الباركود -->
   <script src="https://unpkg.com/html5-qrcode"></script>
 
   <style>
@@ -17,7 +15,6 @@
       overflow: hidden;
       height: 100%;
     }
-
     #container {
       width: 100%;
       max-width: 450px;
@@ -25,14 +22,12 @@
       padding: 5px;
       box-sizing: border-box;
     }
-
     #reader {
       width: 100%;
       border-radius: 12px;
       overflow: hidden;
       background: #000;
     }
-
     #status {
       text-align: center;
       padding: 12px 4px;
@@ -50,7 +45,6 @@
   </div>
 
   <script>
-    // بروتوكول Streamlit الرسمي
     function sendMessageToStreamlitClient(type, data) {
       var outData = Object.assign({ isStreamlitMessage: true, type: type }, data);
       window.parent.postMessage(outData, "*");
@@ -65,10 +59,8 @@
     }
 
     function sendValueToStreamlit(value) {
-      // إجبار القيمة أن تكون نص فقط
       sendMessageToStreamlitClient("streamlit:setComponentValue", {
-        value: String(value || ""),
-        dataType: "json",
+        value: String(value || "")
       });
     }
 
@@ -81,7 +73,6 @@
       if (!scanning) return;
       scanning = false;
 
-      // إجبار القيمة أن تكون نص فقط مهما كان نوعها
       const pureText = String(decodedText || decodedResult?.text || "");
 
       statusDiv.innerText = "✅ تم قراءة الباركود";
@@ -91,9 +82,7 @@
         .catch(() => sendValueToStreamlit(pureText));
     }
 
-    function onScanFailure() {
-      // تجاهل الأخطاء أثناء الفحص
-    }
+    function onScanFailure() {}
 
     var config = {
       fps: 10,
