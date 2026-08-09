@@ -1,113 +1,118 @@
 <!DOCTYPE html>
 <html lang="ar">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <script src="https://unpkg.com"></script>
-    <style>
-      html, body {
-        margin: 0;
-        padding: 0;
-        background: transparent;
-        font-family: -apple-system, "Segoe UI", Tahoma, sans-serif;
-        direction: rtl;
-        overflow: hidden;
-        height: 100%;
-      }
-      #container {
-        width: 100%;
-        max-width: 450px;
-        margin: 0 auto;
-        padding: 5px;
-        box-sizing: border-box;
-      }
-      #reader {
-        width: 100%;
-        border-radius: 12px;
-        overflow: hidden;
-        background: #000; /* خلفية سوداء تظهر فورًا لمنع الوميض الأبيض */
-      }
-      #status {
-        text-align: center;
-        padding: 12px 4px;
-        font-size: 15px;
-        font-weight: bold;
-        color: #333;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="container">
-      <div id="reader"></div>
-      <div id="status">⏳ جاري تشغيل الكاميرا...</div>
-    </div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-    <script>
-      // -------------------- بروتوكول Streamlit الرسمي --------------------
-      function sendMessageToStreamlitClient(type, data) {
-        var outData = Object.assign({ isStreamlitMessage: true, type: type }, data);
-        window.parent.postMessage(outData, "*");
-      }
+  <!-- مكتبة قراءة الباركود -->
+  <script src="https://unpkg.com/html5-qrcode"></script>
 
-      function notifyReady() {
-        sendMessageToStreamlitClient("streamlit:componentReady", { apiVersion: 1 });
-      }
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      font-family: -apple-system, "Segoe UI", Tahoma, sans-serif;
+      direction: rtl;
+      overflow: hidden;
+      height: 100%;
+    }
 
-      function setFixedFrameHeight() {
-        // تحديد ارتفاع ثابت وكافي لمنع التقطيع والوميض تمامًا في Streamlit
-        sendMessageToStreamlitClient("streamlit:setFrameHeight", { height: 480 });
-      }
+    #container {
+      width: 100%;
+      max-width: 450px;
+      margin: 0 auto;
+      padding: 5px;
+      box-sizing: border-box;
+    }
 
-      function sendValueToStreamlit(value) {
-        sendMessageToStreamlitClient("streamlit:setComponentValue", {
-          value: value,
-          dataType: "json",
-        });
-      }
+    #reader {
+      width: 100%;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #000;
+    }
 
-      var statusDiv = document.getElementById("status");
-      var scanning = true;
+    #status {
+      text-align: center;
+      padding: 12px 4px;
+      font-size: 15px;
+      font-weight: bold;
+      color: #ddd;
+    }
+  </style>
+</head>
 
-      var html5Qrcode = new Html5Qrcode("reader", { verbose: false });
+<body>
+  <div id="container">
+    <div id="reader"></div>
+    <div id="status">⏳ جاري تشغيل الكاميرا...</div>
+  </div>
 
-      function onScanSuccess(decodedText) {
-        if (!scanning) return;
-        scanning = false;
-        statusDiv.innerText = "✅ تم قراءة الباركود";
-        html5Qrcode.stop().then(function () {
-          sendValueToStreamlit(decodedText);
-        }).catch(function () {
-          sendValueToStreamlit(decodedText);
-        });
-      }
+  <script>
+    // بروتوكول Streamlit الرسمي
+    function sendMessageToStreamlitClient(type, data) {
+      var outData = Object.assign({ isStreamlitMessage: true, type: type }, data);
+      window.parent.postMessage(outData, "*");
+    }
 
-      function onScanFailure() {
-        // تجاهل طبيعي أثناء الفحص وظهور الكود
-      }
+    function notifyReady() {
+      sendMessageToStreamlitClient("streamlit:componentReady", { apiVersion: 1 });
+    }
 
-      // إعدادات مرنة جداً لمنع الوميض والتعارض مع تعريفات كاميرا الهاتف
-      var config = {
-        fps: 10,
-        qrbox: { width: 250, height: 250 } // صندوق فحص مربع وواضح وثابت
-      };
+    function setFixedFrameHeight() {
+      sendMessageToStreamlitClient("streamlit:setFrameHeight", { height: 480 });
+    }
 
-      // تشغيل الكاميرا الخلفية
-      html5Qrcode
-        .start({ facingMode: "environment" }, config, onScanSuccess, onScanFailure)
-        .then(function () {
-          statusDiv.innerText = "📡 وجّه الكاميرا نحو الباركود...";
-          setFixedFrameHeight(); // ضبط المساحة فوراً بعد استقرار الكاميرا
-        })
-        .catch(function (err) {
-          statusDiv.innerText = "⚠️ تعذّر تشغيل الكاميرا: " + err;
-          setFixedFrameHeight();
-        });
+    function sendValueToStreamlit(value) {
+      sendMessageToStreamlitClient("streamlit:setComponentValue", {
+        value: value,
+        dataType: "json",
+      });
+    }
 
-      window.addEventListener("load", function () {
-        notifyReady();
+    var statusDiv = document.getElementById("status");
+    var scanning = true;
+
+    var html5Qrcode = new Html5Qrcode("reader", { verbose: false });
+
+    function onScanSuccess(decodedText) {
+      if (!scanning) return;
+      scanning = false;
+
+      statusDiv.innerText = "✅ تم قراءة الباركود";
+
+      html5Qrcode.stop()
+        .then(() => sendValueToStreamlit(decodedText))
+        .catch(() => sendValueToStreamlit(decodedText));
+    }
+
+    function onScanFailure() {
+      // تجاهل الأخطاء أثناء الفحص
+    }
+
+    var config = {
+      fps: 10,
+      qrbox: { width: 250, height: 250 }
+    };
+
+    html5Qrcode
+      .start({ facingMode: "environment" }, config, onScanSuccess, onScanFailure)
+      .then(() => {
+        statusDiv.innerText = "📡 وجّه الكاميرا نحو الباركود...";
+        setFixedFrameHeight();
+      })
+      .catch(err => {
+        statusDiv.innerText = "⚠️ تعذّر تشغيل الكاميرا: " + err;
         setFixedFrameHeight();
       });
+
+    window.addEventListener("load", () => {
       notifyReady();
-    </script>
-  </body>
+      setFixedFrameHeight();
+    });
+
+    notifyReady();
+  </script>
+</body>
 </html>
