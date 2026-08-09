@@ -1,9 +1,11 @@
 import base64
 from datetime import datetime, timedelta, timezone
+import io
 import re
 from google.auth.exceptions import GoogleAuthError
 from google.oauth2 import service_account
 import gspread
+from PIL import Image
 import streamlit as st
 
 # -------------------- تهيئة الصفحة وتنسيق الجوال (CSS) --------------------
@@ -45,6 +47,54 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
+
+
+# -------------------- دالة قراءة الباركود من الصورة --------------------
+def decode_barcode_from_image(image_file):
+    """قراءة وفك تشفير الباركود من الصورة الملتقطة بواسطة الكاميرا"""
+    if image_file is None:
+        return None
+
+    # 1. التجربة عبر مكتبة zxing-cpp (الأسرع والأدق)
+    try:
+        import zxingcpp
+
+        image_file.seek(0)
+        img = Image.open(image_file)
+        results = zxingcpp.read_barcodes(img)
+        if results:
+            return results[0].text
+    except Exception:
+        pass
+
+    # 2. التجربة عبر pyzbar كخيار احتياطي
+    try:
+        from pyzbar.pyzbar import decode
+
+        image_file.seek(0)
+        img = Image.open(image_file)
+        decoded_objects = decode(img)
+        if decoded_objects:
+            return decoded_objects[0].data.decode("utf-8")
+    except Exception:
+        pass
+
+    # 3. التجربة عبر OpenCV كخيار احتياطي ثالث
+    try:
+        import cv2
+        import numpy as np
+
+        image_file.seek(0)
+        file_bytes = np.asarray(bytearray(image_file.read()), dtype=np.uint8)
+        cv_img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        detector = cv2.barcode.BarcodeDetector()
+        retval, decoded_info, _, _ = detector.detectAndDecode(cv_img)
+        if retval and decoded_info and decoded_info[0]:
+            return decoded_info[0]
+    except Exception:
+        pass
+
+    return None
 
 
 # -------------------- المصادقة والاتصال مع Google Sheets --------------------
@@ -159,6 +209,42 @@ def parse_existing_date(date_str):
     return datetime.today().date()
 
 
+def search_products(q_barcode="", q_name=""):
+    """دالة تنفيذ البحث في جوجل شيت"""
+    q_barcode = q_barcode.strip()
+    q_name = q_name.strip().lower()
+
+    if not q_barcode and not q_name:
+        st.info("الرجاء إدخال باركود أو اسم المنتج ثم اضغط بحث.")
+        return
+
+    try:
+        gc, sh, ws, header, rows = open_products_sheet()
+        st.session_state["sh_id"] = sh.id
+
+        BARCODE_IDX, NAME_IDX = 0, 1
+        matches = []
+
+        for idx, row in enumerate(rows, start=2):
+            cell_barcode = row[BARCODE_IDX] if len(row) > BARCODE_IDX else ""
+            cell_name = row[NAME_IDX] if len(row) > NAME_IDX else ""
+
+            if q_barcode and cell_barcode:
+                parts = split_barcodes(cell_barcode)
+                if q_barcode in parts:
+                    matches.append((idx, row))
+                    continue
+
+            if q_name and cell_name and q_name in cell_name.lower():
+                matches.append((idx, row))
+
+        st.session_state["search_matches"] = matches
+        if not matches:
+            st.warning("لم يتم العثور على نتائج مطابقة في الجدول.")
+    except Exception as e:
+        st.error("فشل الاتصال بشيت المنتجات: " + str(e))
+
+
 # -------------------- حالة الجلسة (Session State) --------------------
 if "chosen_row" not in st.session_state:
     st.session_state["chosen_row"] = None
@@ -183,53 +269,44 @@ if st.session_state.get("last_update"):
     st.write(f"**الكمية الجديدة:** {lu.get('qty','')}")
     st.markdown("---")
 
-# حقول البحث
-col1, col2 = st.columns(2)
-with col1:
-    barcode_input = st.text_input(
-        "باركود (مطابق 100%)", key="search_barcode_input"
-    )
-with col2:
-    name_input = st.text_input("اسم المنتج (بحث جزئي)", key="search_name_input")
+# -------------------- التبويبات (بحث يدوي / كاميرا) --------------------
+tab_cam, tab_text = st.tabs(["📷 المسح بالكاميرا", "⌨️ البحث النصي"])
 
-if st.button("🔍 بحث عن منتج"):
-    st.session_state["chosen_row"] = None
-    st.session_state["last_update"] = None
-    st.session_state["search_matches"] = []
+with tab_cam:
+    st.caption("وجه كاميرا الجوال نحو الباركود مباشرة لالتقاطه")
+    camera_file = st.camera_input("التقط صورة للباركود")
 
-    q_barcode = barcode_input.strip()
-    q_name = name_input.strip().lower()
+    if camera_file:
+        with st.spinner("جاري قراءة الباركود من الصورة..."):
+            scanned_code = decode_barcode_from_image(camera_file)
 
-    if not q_barcode and not q_name:
-        st.info("الرجاء إدخال باركود أو اسم المنتج ثم اضغط بحث.")
-    else:
-        try:
-            gc, sh, ws, header, rows = open_products_sheet()
-            st.session_state["sh_id"] = sh.id
+        if scanned_code:
+            st.success(f"🎯 تم قراءة الباركود: **{scanned_code}**")
+            # إجراء البحث فوراً بعد قراءة الباركود
+            st.session_state["chosen_row"] = None
+            st.session_state["last_update"] = None
+            search_products(q_barcode=scanned_code)
+        else:
+            st.error(
+                "❌ لم يتم التعرف على الباركود، يرجى تقريب الكاميرا وتحسين الإضاءة."
+            )
 
-            BARCODE_IDX, NAME_IDX = 0, 1
-            matches = []
+with tab_text:
+    col1, col2 = st.columns(2)
+    with col1:
+        barcode_input = st.text_input(
+            "باركود (مطابق 100%)", key="search_barcode_input"
+        )
+    with col2:
+        name_input = st.text_input(
+            "اسم المنتج (بحث جزئي)", key="search_name_input"
+        )
 
-            for idx, row in enumerate(rows, start=2):
-                cell_barcode = (
-                    row[BARCODE_IDX] if len(row) > BARCODE_IDX else ""
-                )
-                cell_name = row[NAME_IDX] if len(row) > NAME_IDX else ""
-
-                if q_barcode and cell_barcode:
-                    parts = split_barcodes(cell_barcode)
-                    if q_barcode in parts:
-                        matches.append((idx, row))
-                        continue
-
-                if q_name and cell_name and q_name in cell_name.lower():
-                    matches.append((idx, row))
-
-            st.session_state["search_matches"] = matches
-            if not matches:
-                st.info("لم يتم العثور على نتائج مطابقة.")
-        except Exception as e:
-            st.error("فشل الاتصال بشيت المنتجات: " + str(e))
+    if st.button("🔍 بحث عن منتج"):
+        st.session_state["chosen_row"] = None
+        st.session_state["last_update"] = None
+        st.session_state["search_matches"] = []
+        search_products(q_barcode=barcode_input, q_name=name_input)
 
 # -------------------- عرض النتائج كبطاقات الجوال --------------------
 matches = st.session_state.get("search_matches", [])
