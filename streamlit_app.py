@@ -1,13 +1,27 @@
 import base64
 from datetime import datetime, timedelta, timezone
+import os
 import re
 from google.auth.exceptions import GoogleAuthError
 from google.oauth2 import service_account
 import gspread
-import queue
 import streamlit as st
-import zxingcpp
-from streamlit_webrtc import webrtc_streamer
+import streamlit.components.v1 as components
+
+# -------------------- تسجيل مكوّن سكانر الباركود المخصص --------------------
+# مكوّن ثابت (بدون خطوة بناء npm) موجود في مجلد barcode_component بجانب هذا
+# الملف، يفتح الكاميرا الخلفية فورًا ويقرأ أي نوع باركود (2D أو 1D) ويرجع
+# النص المقروء مباشرة إلى بايثون بدون أزرار أو صفحة فيديو منفصلة.
+_COMPONENT_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "barcode_component"
+)
+_barcode_scanner_component = components.declare_component(
+    "barcode_scanner", path=_COMPONENT_DIR
+)
+
+
+def barcode_scanner_widget(key=None):
+    return _barcode_scanner_component(key=key, default=None)
 
 # -------------------- تهيئة الصفحة وتنسيق الواجهة (CSS) --------------------
 st.set_page_config(
@@ -231,9 +245,14 @@ def search_products(q_barcode="", q_name=""):
 
 
 def toggle_camera_callback():
-    st.session_state["show_camera"] = not st.session_state.get(
-        "show_camera", False
-    )
+    new_state = not st.session_state.get("show_camera", False)
+    st.session_state["show_camera"] = new_state
+    if new_state:
+        # (جديد) مفتاح فريد لكل جلسة فتح كاميرا، لضمان بدء المكوّن من جديد
+        # وعدم إعادة استخدام قيمة قديمة محفوظة من مسح سابق
+        st.session_state["scanner_session"] = (
+            st.session_state.get("scanner_session", 0) + 1
+        )
 
 
 def select_product_callback(r_idx, r, qty):
@@ -253,32 +272,6 @@ def adjust_qty_callback(delta):
 def cancel_edit_callback():
     st.session_state["chosen_row"] = None
     st.session_state.pop("manual_qty_input", None)
-
-
-def make_video_frame_callback(result_queue):
-    """(جديد) يبني دالة تُستدعى تلقائيًا على كل إطار فيديو من الكاميرا،
-    تحلّل الإطار بحثًا عن أي باركود (كل الأنواع: QR وغيره ثنائي الأبعاد،
-    وكذلك EAN/UPC/Code128 وغيره أحادي الأبعاد) وتضعه في طابور مشترك
-    ليقرأه السكربت الرئيسي فورًا دون الحاجة لضغط أي زر."""
-    frame_counter = {"i": 0}
-
-    def video_frame_callback(frame):
-        frame_counter["i"] += 1
-        # نفحص كل 3 إطارات فقط لتخفيف الحمل على المعالج والحفاظ على سلاسة الفيديو
-        if frame_counter["i"] % 3 == 0:
-            img = frame.to_ndarray(format="bgr24")
-            try:
-                results = zxingcpp.read_barcodes(img)
-            except Exception:
-                results = []
-            if results:
-                try:
-                    result_queue.put_nowait(results[0].text)
-                except queue.Full:
-                    pass
-        return frame
-
-    return video_frame_callback
 
 
 def run_text_search_callback():
@@ -305,8 +298,8 @@ if "show_camera" not in st.session_state:
     st.session_state["show_camera"] = False
 if "search_barcode_input" not in st.session_state:
     st.session_state["search_barcode_input"] = ""
-if "barcode_queue" not in st.session_state:
-    st.session_state["barcode_queue"] = queue.Queue(maxsize=5)
+if "scanner_session" not in st.session_state:
+    st.session_state["scanner_session"] = 0
 
 # -------------------- الواجهة الرئيسية (صفحة واحدة فقط) --------------------
 st.title("📱 إدارة وتحديث المنتجات")
@@ -337,48 +330,21 @@ if not st.session_state.get("chosen_row"):
             use_container_width=True,
         )
 
-    # -------------------- (جديد) سكان مباشر تلقائي بدون ضغط زر --------------------
-    # نستخدم streamlit-webrtc لفتح فيديو مباشر من الكاميرا، ونحلل الإطارات
-    # لحظيًا بمكتبة zxingcpp التي تدعم كل أنواع الباركود (ثنائي الأبعاد مثل
-    # QR/DataMatrix، وأحادي الأبعاد مثل EAN/UPC/Code128) بدون أي إعداد إضافي.
-    # بمجرد اكتشاف أي باركود، يُنفَّذ البحث تلقائيًا فورًا دون أي تدخل من المستخدم.
+    # -------------------- سكانر مباشر تلقائي بدون أي زر --------------------
+    # مكوّن مخصص (barcode_component) يفتح الكاميرا الخلفية فورًا، يقرأ أي نوع
+    # باركود (ثنائي الأبعاد مثل QR/DataMatrix، أو أحادي الأبعاد مثل
+    # EAN/UPC/Code128)، ويرجّع النص المقروء مباشرة لبايثون ويقفل الكاميرا —
+    # تمامًا مثل تجربة سكانر AppSheet، بدون فيديو مستمر ولا أزرار Start/Stop.
     if st.session_state.get("show_camera"):
-        st.caption("📷 وجّه الكاميرا نحو الباركود — سيتم اكتشافه وقراءته تلقائيًا:")
+        st.caption("📷 وجّه الكاميرا نحو الباركود، ستُقرأ تلقائيًا فور اكتشافها:")
+        scanner_key = f"live_barcode_scanner_{st.session_state['scanner_session']}"
+        scanned_val = barcode_scanner_widget(key=scanner_key)
 
-        webrtc_ctx = webrtc_streamer(
-            key="barcode-live-scanner",
-            video_frame_callback=make_video_frame_callback(
-                st.session_state["barcode_queue"]
-            ),
-            media_stream_constraints={
-                "video": {"facingMode": {"ideal": "environment"}},
-                "audio": False,
-            },
-            rtc_configuration={
-                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-            },
-        )
-
-        if webrtc_ctx.state.playing:
-            status_placeholder = st.empty()
-            status_placeholder.info("📡 جاري البحث عن باركود تلقائيًا...")
-            scanned_val = None
-            # حلقة انتظار قصيرة تفحص الطابور المشترك مع الفيديو المباشر،
-            # دون الحاجة لأي rerun أو تدخل من المستخدم
-            while webrtc_ctx.state.playing:
-                try:
-                    scanned_val = st.session_state["barcode_queue"].get(
-                        timeout=1.0
-                    )
-                except queue.Empty:
-                    continue
-                break
-
-            if scanned_val:
-                st.session_state["search_barcode_input"] = scanned_val
-                st.session_state["show_camera"] = False
-                status_placeholder.success(f"🎯 تم قراءة الباركود: **{scanned_val}**")
-                search_products(q_barcode=scanned_val)
+        if scanned_val:
+            st.session_state["search_barcode_input"] = scanned_val
+            st.session_state["show_camera"] = False
+            st.success(f"🎯 تم قراءة الباركود: **{scanned_val}**")
+            search_products(q_barcode=scanned_val)
 
     # حقل البحث باسم المنتج
     st.text_input("اسم المنتج (بحث جزئي)", key="search_name_input")
