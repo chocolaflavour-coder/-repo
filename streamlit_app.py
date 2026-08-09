@@ -115,9 +115,10 @@ if "last_update" not in st.session_state:
     st.session_state["last_update"] = None  # {"name":..., "expiry":..., "qty":...}
 
 # -------------------- عرض ملخص التحديث السابق (إن وُجد) فوق البحث فقط --------------------
+# هذا الملخص يبقى ظاهرًا حتى يبدأ المستخدم بحثًا جديدًا
 if st.session_state.get("last_update"):
     lu = st.session_state["last_update"]
-    st.success("تم تحديث الإدخال بنجاح")
+    st.success("تم التحديث بنجاح")
     st.write(f"**اسم المنتج:** {lu.get('name','')}")
     st.write(f"**تاريخ الصلاحية:** {lu.get('expiry','')}")
     st.write(f"**الكمية:** {lu.get('qty','')}")
@@ -127,14 +128,21 @@ if st.session_state.get("last_update"):
 st.header("ابحث بالباركود أو باسم المنتج")
 col1, col2 = st.columns(2)
 with col1:
-    barcode_input = st.text_input("باركود (مطابق 100%)", key="search_barcode")
+    # نستخدم قيم الجلسة كقيمة افتراضية حتى تُمسح بعد التحديث
+    barcode_input = st.text_input("باركود (مطابق 100%)", value=st.session_state.get("search_barcode",""), key="search_barcode")
 with col2:
-    name_input = st.text_input("اسم المنتج (بحث جزئي)", key="search_name")
+    name_input = st.text_input("اسم المنتج (بحث جزئي)", value=st.session_state.get("search_name",""), key="search_name")
 
 # زر البحث
 if st.button("بحث"):
+    # عند بدء بحث جديد نمسح اختيار المنتج الحالي (حتى لا تظهر حقول التحديث)
     st.session_state["chosen_row"] = None
-    # لا نمسح last_update هنا تلقائياً؛ المستخدم يريد رؤية آخر تحديث حتى يبدأ بحث جديد
+    # مسح رسالة التحديث السابق لأن المستخدم بدأ تفاعل جديد
+    st.session_state["last_update"] = None
+    # احفظ نصوص البحث في الجلسة (ستُمسح تلقائيًا بعد نجاح التحديث)
+    st.session_state["search_barcode"] = barcode_input
+    st.session_state["search_name"] = name_input
+
     if (not barcode_input or not barcode_input.strip()) and (not name_input or not name_input.strip()):
         st.info("الرجاء إدخال باركود أو اسم المنتج ثم اضغط بحث.")
     else:
@@ -183,7 +191,6 @@ if st.button("بحث"):
                     label = f"صف {r_idx} - {nm} - باركود: {bc}"
                     options.append(label)
                     options_map[label] = r_idx
-                # مفتاح فريد يعتمد على uuid لضمان عدم تداخل الحالة
                 sel_key = f"select_barcode_{uuid.uuid4().hex}"
                 sel = st.selectbox("اختر المنتج من النتائج المطابقة:", options, key=sel_key)
                 if sel:
@@ -273,7 +280,6 @@ if st.session_state.get("chosen_row"):
 
             # تسجيل التحديث في ورقة "التحديثات" داخل نفس الملف
             ws_updates = get_updates_sheet_in_same_spreadsheet(sh)
-            # توقيت السعودية UTC+3
             sa_time = datetime.now(timezone(timedelta(hours=3)))
             update_time = sa_time.strftime("%Y-%m-%d %H:%M:%S")
             barcode_cell_value = current_barcode_cell or ws.cell(row_idx, BARCODE_IDX + 1).value or ""
@@ -293,12 +299,17 @@ if st.session_state.get("chosen_row"):
                 "qty": new_qty_str
             }
 
+            # امسح حقول البحث الحالية كما في سلوك نموذج جديد
+            st.session_state["search_barcode"] = ""
+            st.session_state["search_name"] = ""
+
             # إعادة تهيئة الحالة لعرض صفحة البحث فقط (نمسح حقول التحديث)
             st.session_state["chosen_row"] = None
             if "sh_id" in st.session_state:
                 del st.session_state["sh_id"]
 
-            # لا نستدعي experimental_rerun؛ الواجهة ستعرض ملخص التحديث في أعلى الصفحة تلقائياً
-            # (بما أن last_update تم تعيينه، سيظهر عند إعادة عرض الصفحة)
+            # لا نستدعي experimental_rerun لأنها قد لا تكون متاحة في بعض بيئات streamlit
+            # الواجهة ستعرض الآن رسالة النجاح والحقول السابقة اختفت، ويمكن للمستخدم البحث مجدداً
+
         except Exception as e:
             st.exception(e)
