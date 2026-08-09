@@ -113,9 +113,12 @@ if "sh_id" not in st.session_state:
     st.session_state["sh_id"] = None
 if "last_update" not in st.session_state:
     st.session_state["last_update"] = None  # {"name":..., "expiry":..., "qty":...}
+if "search_barcode" not in st.session_state:
+    st.session_state["search_barcode"] = ""
+if "search_name" not in st.session_state:
+    st.session_state["search_name"] = ""
 
 # -------------------- عرض ملخص التحديث السابق (إن وُجد) فوق البحث فقط --------------------
-# هذا الملخص يبقى ظاهرًا حتى يبدأ المستخدم بحثًا جديدًا
 if st.session_state.get("last_update"):
     lu = st.session_state["last_update"]
     st.success("تم التحديث بنجاح")
@@ -128,18 +131,17 @@ if st.session_state.get("last_update"):
 st.header("ابحث بالباركود أو باسم المنتج")
 col1, col2 = st.columns(2)
 with col1:
-    # نستخدم قيم الجلسة كقيمة افتراضية حتى تُمسح بعد التحديث
-    barcode_input = st.text_input("باركود (مطابق 100%)", value=st.session_state.get("search_barcode",""), key="search_barcode")
+    barcode_input = st.text_input("باركود (مطابق 100%)", value=st.session_state.get("search_barcode",""), key="search_barcode_input")
 with col2:
-    name_input = st.text_input("اسم المنتج (بحث جزئي)", value=st.session_state.get("search_name",""), key="search_name")
+    name_input = st.text_input("اسم المنتج (بحث جزئي)", value=st.session_state.get("search_name",""), key="search_name_input")
 
 # زر البحث
 if st.button("بحث"):
-    # عند بدء بحث جديد نمسح اختيار المنتج الحالي (حتى لا تظهر حقول التحديث)
+    # عند بدء بحث جديد نمسح اختيار المنتج الحالي
     st.session_state["chosen_row"] = None
-    # مسح رسالة التحديث السابق لأن المستخدم بدأ تفاعل جديد
+    # امسح رسالة التحديث السابق لأن المستخدم بدأ تفاعل جديد
     st.session_state["last_update"] = None
-    # احفظ نصوص البحث في الجلسة (ستُمسح تلقائيًا بعد نجاح التحديث)
+    # خزّن نصوص البحث في الجلسة (ستُمسح تلقائيًا بعد نجاح التحديث)
     st.session_state["search_barcode"] = barcode_input
     st.session_state["search_name"] = name_input
 
@@ -308,8 +310,15 @@ if st.session_state.get("chosen_row"):
             if "sh_id" in st.session_state:
                 del st.session_state["sh_id"]
 
-            # لا نستدعي experimental_rerun لأنها قد لا تكون متاحة في بعض بيئات streamlit
-            # الواجهة ستعرض الآن رسالة النجاح والحقول السابقة اختفت، ويمكن للمستخدم البحث مجدداً
+            # أعد تحميل الصفحة بطريقة آمنة:
+            if hasattr(st, "experimental_rerun"):
+                try:
+                    st.experimental_rerun()
+                except Exception:
+                    # إذا فشل، استخدم تغيير query params لفرض إعادة تحميل
+                    st.experimental_set_query_params(_refresh=uuid.uuid4().hex)
+            else:
+                st.experimental_set_query_params(_refresh=uuid.uuid4().hex)
 
         except Exception as e:
             st.exception(e)
