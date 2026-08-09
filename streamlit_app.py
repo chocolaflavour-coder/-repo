@@ -114,7 +114,13 @@ with col1:
 with col2:
     name_input = st.text_input("اسم المنتج (بحث جزئي)")
 
+# متغيرات لحفظ حالة المنتج المختار
+if "chosen_row" not in st.session_state:
+    st.session_state["chosen_row"] = None  # (row_idx, row_values)
+
+# زر البحث
 if st.button("بحث"):
+    st.session_state["chosen_row"] = None
     if (not barcode_input or not barcode_input.strip()) and (not name_input or not name_input.strip()):
         st.info("الرجاء إدخال باركود أو اسم المنتج ثم اضغط بحث.")
     else:
@@ -186,17 +192,124 @@ if st.button("بحث"):
         else:
             st.info("لم يتم العثور على نتائج مطابقة.")
 
-        # إذا اختار المستخدم منتجًا، اعرض نموذج التحديث لتعديل نفس الصف
         if chosen:
-            row_idx, row_values = chosen
-            current_barcode_cell = row_values[BARCODE_IDX] if len(row_values) > BARCODE_IDX else ""
-            current_name = row_values[NAME_IDX] if len(row_values) > NAME_IDX else ""
-            current_expiry = row_values[EXPIRY_IDX] if len(row_values) > EXPIRY_IDX else ""
-            current_qty = row_values[QTY_IDX] if len(row_values) > QTY_IDX else ""
+            # خزّن المنتج المختار في session_state لعرض حقول التحديث أسفل البحث
+            st.session_state["chosen_row"] = chosen
+            st.session_state["gc"] = gc
+            st.session_state["sh_id"] = sh.id  # للاطلاع إن احتجنا لاحقًا
+            st.success("اختر المنتج الآن لتحديث الكمية وتاريخ الصلاحية.")
 
-            st.markdown("### تحديث الكمية وتاريخ الصلاحية (يُحدَّث نفس الصف)")
-            with st.form("update_product_form"):
+# إذا يوجد منتج مختار، اعرض حقول التحديث مباشرة بعد البحث
+if st.session_state.get("chosen_row"):
+    try:
+        gc = st.session_state.get("gc")
+        # أعد فتح الشيت لضمان صلاحية الكائنات (gspread objects قد لا تكون قابلة للتخزين عبر جلسات)
+        gc = get_gspread_client()
+        sh = gc.open_by_key(st.session_state["sh_id"])
+        ws = sh.get_worksheet(0)
+    except Exception:
+        # كحل احتياطي حاول فتح بالاسم
+        try:
+            gc, sh, ws, header, rows = open_products_sheet()
+        except Exception as e:
+            st.error("تعذر إعادة فتح شيت المنتجات: " + str(e))
+            st.stop()
+
+    row_idx, row_values = st.session_state["chosen_row"]
+    BARCODE_IDX = 0
+    NAME_IDX = 1
+    EXPIRY_IDX = 2
+    QTY_IDX = 3
+
+    current_barcode_cell = row_values[BARCODE_IDX] if len(row_values) > BARCODE_IDX else ""
+    current_name = row_values[NAME_IDX] if len(row_values) > NAME_IDX else ""
+    current_expiry = row_values[EXPIRY_IDX] if len(row_values) > EXPIRY_IDX else ""
+    current_qty = row_values[QTY_IDX] if len(row_values) > QTY_IDX else ""
+
+    st.markdown("### تحديث سريع (يُحدّث نفس الصف ويُسجّل في ورقة التحديثات)")
+    cols = st.columns(3)
+    with cols[0]:
+        st.write("**المنتج**")
+        st.write(current_name or "(بدون اسم)")
+    with cols[1]:
+        st.write("**الباركود**")
+        st.write(current_barcode_cell or "(بدون باركود)")
+    with cols[2]:
+        st.write("**الصف**")
+        st.write(row_idx)
+
+    # حقول التحديث التي طلبتها تظهر فوراً
+    try:
+        default_qty = int(current_qty) if str(current_qty).strip().isdigit() else 0
+    except Exception:
+        default_qty = 0
+
+    new_qty = st.number_input("الكمية الجديدة", min_value=0, step=1, value=default_qty, key=f"qty_{row_idx}")
+    new_expiry = st.date_input("تاريخ الصلاحية الجديد", value=datetime.today().date(), key=f"expiry_{row_idx}")
+
+    if st.button("تطبيق التحديث الآن"):
+        try:
+            expiry_str = new_expiry.strftime("%Y-%m-%d")
+            new_qty_str = str(new_qty)
+            st.info(f"محاولة تحديث الصف {row_idx} -> تاريخ: {expiry_str}، كمية: {new_qty_str}")
+
+            # قراءة الصف قبل التحديث (تشخيص)
+            try:
+                before_row = ws.row_values(row_idx)
+                st.write("قيم الصف قبل التحديث:", before_row)
+            except Exception as e:
+                st.warning("تعذر قراءة الصف قبل التحديث: " + str(e))
+
+            # تحديث خلية تاريخ الصلاحية والكمية في نفس الصف
+            try:
+                ws.update_cell(row_idx, EXPIRY_IDX + 1, expiry_str)
+                st.success("تم تحديث تاريخ الصلاحية في الشيت الأصلي.")
+            except Exception as e:
+                st.error("فشل تحديث تاريخ الصلاحية: " + str(e))
+                raise
+
+            try:
+                ws.update_cell(row_idx, QTY_IDX + 1, new_qty_str)
+                st.success("تم تحديث الكمية في الشيت الأصلي.")
+            except Exception as e:
+                st.error("فشل تحديث الكمية: " + str(e))
+                raise
+
+            # قراءة الصف بعد التحديث (تشخيص)
+            try:
+                after_row = ws.row_values(row_idx)
+                st.write("قيم الصف بعد التحديث:", after_row)
+            except Exception as e:
+                st.warning("تعذر قراءة الصف بعد التحديث: " + str(e))
+
+            # تسجيل التحديث في ورقة "التحديثات" داخل نفس الملف
+            try:
+                ws_updates = get_updates_sheet_in_same_spreadsheet(sh)
+                update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                barcode_cell_value = current_barcode_cell or ws.cell(row_idx, BARCODE_IDX + 1).value or ""
+                product_name_for_log = current_name
+                barcode_for_log = barcode_cell_value
+                new_update_row = [barcode_for_log, product_name_for_log, expiry_str, new_qty_str, update_time]
+                st.write("الصف الذي سأضيفه إلى 'التحديثات':", new_update_row)
                 try:
-                    default_qty = int(current_qty) if str(current_qty).strip().isdigit() else 0
-                except Exception:
-                    default_qty = 0
+                    ws_updates.append_row(new_update_row, value_input_option="USER_ENTERED")
+                    st.success("تم تسجيل التحديث في ورقة 'التحديثات'.")
+                except Exception as e_append:
+                    st.warning("فشل append_row على ورقة 'التحديثات': " + str(e_append))
+                    try:
+                        vals = ws_updates.get_all_values()
+                        next_index = len(vals) + 1
+                        ws_updates.insert_row(new_update_row, index=next_index)
+                        st.success(f"تم إدراج السجل في ورقة 'التحديثات' في الصف {next_index}.")
+                    except Exception as e_insert:
+                        st.error("فشل إدراج السجل في ورقة 'التحديثات' أيضاً.")
+                        st.exception(e_insert)
+            except Exception as e_updates:
+                st.error("حدث خطأ أثناء محاولة تسجيل السجل في ورقة 'التحديثات'.")
+                st.exception(e_updates)
+
+            # بعد النجاح أفرغ الاختيار حتى لا يتكرر التحديث بالضغط التالي
+            st.session_state["chosen_row"] = None
+
+        except Exception as e:
+            st.exception(e)
