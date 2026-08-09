@@ -4,6 +4,7 @@ from google.oauth2 import service_account
 import gspread
 import base64
 from google.auth.exceptions import GoogleAuthError
+import re
 
 st.set_page_config(page_title="بحث المنتجات", layout="centered")
 st.title("بحث المنتجات")
@@ -40,7 +41,6 @@ def get_gspread_client():
     missing = [k for k, v in info.items() if not v]
     if missing:
         raise RuntimeError("متغيرات مفقودة في Secrets: " + ", ".join(missing))
-    # نستخدم نطاقين شائعين: Sheets للقراءة/الكتابة و Drive لو احتجنا صلاحيات إضافية لاحقاً
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
@@ -59,7 +59,6 @@ def open_products_sheet():
     try:
         sh = gc.open("المنتجات")
     except Exception as e:
-        # حاول فتح بالـ key إذا كان موجودًا في Secrets كبديل
         sheet_key = st.secrets.get("TEST_SHEET_ID")
         if sheet_key:
             try:
@@ -82,6 +81,19 @@ with col1:
 with col2:
     name_input = st.text_input("اسم المنتج (بحث جزئي)")
 
+def split_barcodes(cell_text):
+    """
+    يقسم نص الخلية إلى قائمة باركودات محتملة.
+    يفصل على أي مسافات متتابعة أو فواصل شائعة (مسافة، فاصلة، ;، |).
+    ويزيل الفراغات الزائدة.
+    """
+    if not cell_text:
+        return []
+    # استبدال الفواصل الشائعة بمسافة ثم تقسيم على أي عدد من الفراغات
+    cleaned = re.sub(r"[,;|]+", " ", cell_text)
+    parts = re.split(r"\s+", cleaned.strip())
+    return [p for p in parts if p]
+
 if st.button("بحث"):
     if (not barcode_input or not barcode_input.strip()) and (not name_input or not name_input.strip()):
         st.info("الرجاء إدخال باركود أو اسم المنتج ثم اضغط بحث.")
@@ -101,9 +113,15 @@ if st.button("بحث"):
             for idx, row in enumerate(rows, start=2):  # start=2 لأننا تجاهلنا رأس العمود
                 cell_barcode = row[BARCODE_IDX] if len(row) > BARCODE_IDX else ""
                 cell_name = row[NAME_IDX] if len(row) > NAME_IDX else ""
-                # باركود: مطابقة 100%
-                if q_barcode and cell_barcode and q_barcode == cell_barcode:
-                    exact_barcode_matches.append((idx, row))
+                # باركود: مطابقة 100% أو إذا الخلية تحتوي على عدة باركودات مفصولة بمسافة
+                if q_barcode and cell_barcode:
+                    # قسم الخلية إلى باركودات منفصلة
+                    parts = split_barcodes(cell_barcode)
+                    # قارن كل جزء بمطابقة 100%
+                    for part in parts:
+                        if q_barcode == part:
+                            exact_barcode_matches.append((idx, row))
+                            break  # لا حاجة لفحص بقية الأجزاء في نفس الخلية
                 # اسم: تطابق جزئي غير حساس لحالة الأحرف
                 if q_name and cell_name and q_name in cell_name.lower():
                     name_matches.append((idx, row))
@@ -141,9 +159,7 @@ if st.button("بحث"):
             else:
                 st.info("لم يتم العثور على نتائج مطابقة.")
         except RuntimeError as re:
-            # رسائل واضحة للمستخدم حول المصادقة أو فتح الشيت
             st.error("حدث خطأ أثناء الاتصال بالشيت أو أثناء البحث: " + str(re))
-            # نصيحة سريعة للمستخدم
-            st.info("تأكد أن: 1) تم تمكين Google Sheets API في مشروع Google Cloud، 2) تمت مشاركة الشيت مع عنوان البريد الخاص بالحساب الخدمي (client_email)، 3) القيم في Streamlit Secrets صحيحة.")
+            st.info("تأكد أن: 1) تم تمكين Google Sheets API، 2) تمت مشاركة الشيت مع client_email، 3) القيم في Streamlit Secrets صحيحة.")
         except Exception as e:
             st.error("حدث خطأ غير متوقع: " + str(e))
