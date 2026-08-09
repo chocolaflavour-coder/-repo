@@ -4,7 +4,7 @@ from google.oauth2 import service_account
 import gspread
 import base64
 
-st.set_page_config(page_title="بحث المنتجات - Google Sheets", layout="centered")
+st.set_page_config(page_title="بحث المنتجات", layout="centered")
 st.title("بحث المنتجات")
 
 # --- قراءة المفتاح (يدعم multiline أو Base64) ---
@@ -44,67 +44,89 @@ def get_gspread_client():
     )
     return gspread.authorize(creds)
 
-# --- فتح الشيت وجلب البيانات ---
-def open_sheet_and_get_data():
+# --- فتح جدول باسم "المنتجات" وجلب البيانات (تجاهل رأس العمود) ---
+def open_products_sheet():
     gc = get_gspread_client()
-    sheet_id = st.secrets.get("TEST_SHEET_ID")
-    if not sheet_id:
-        raise RuntimeError("لم يتم تحديد TEST_SHEET_ID في Secrets.")
-    sh = gc.open_by_key(sheet_id)
+    # افتح الملف باسم "المنتجات"
+    sh = gc.open("المنتجات")
     ws = sh.get_worksheet(0)
-    data = ws.get_all_values()
-    return ws, data, sh
+    all_values = ws.get_all_values()
+    # افترض أن الصف الأول هو رأس الأعمدة، لذا نأخذ من الصف الثاني فصاعدًا
+    header = all_values[0] if len(all_values) >= 1 else []
+    rows = all_values[1:] if len(all_values) >= 2 else []
+    return ws, header, rows, sh
 
-# --- واجهة البحث البسيطة ---
-st.header("ابحث باسم المنتج أو الصق الباركود هنا")
+st.header("ابحث بالباركود أو باسم المنتج")
 
-query = st.text_input("اسم المنتج أو الباركود")
+col1, col2 = st.columns(2)
+with col1:
+    barcode_input = st.text_input("باركود (مطابق 100%)")
+with col2:
+    name_input = st.text_input("اسم المنتج (بحث جزئي)")
+
 if st.button("بحث"):
-    if not query or not query.strip():
-        st.info("الرجاء إدخال اسم المنتج أو الباركود ثم اضغط بحث.")
+    if (not barcode_input or not barcode_input.strip()) and (not name_input or not name_input.strip()):
+        st.info("الرجاء إدخال باركود أو اسم المنتج ثم اضغط بحث.")
     else:
         try:
-            ws, data, sh = open_sheet_and_get_data()
-            q = query.strip()
-            # افتراض الأعمدة: الاسم في العمود 1، الباركود في العمود 2
-            NAME_COL = 1
-            BARCODE_COL = 2
+            ws, header, rows, sh = open_products_sheet()
+            q_barcode = barcode_input.strip()
+            q_name = name_input.strip().lower()
+
+            # افتراض: العمود A = باركود (index 0)، العمود B = اسم المنتج (index 1)
+            BARCODE_IDX = 0
+            NAME_IDX = 1
 
             exact_barcode_matches = []
             name_matches = []
 
-            for i, row in enumerate(data, start=1):
-                row_name = row[NAME_COL - 1] if len(row) >= NAME_COL else ""
-                row_barcode = row[BARCODE_COL - 1] if len(row) >= BARCODE_COL else ""
-                # باركود يجب أن يكون مطابق 100%
-                if row_barcode and q == row_barcode:
-                    exact_barcode_matches.append((i, row))
+            for idx, row in enumerate(rows, start=2):  # start=2 لأننا تجاهلنا رأس العمود
+                cell_barcode = row[BARCODE_IDX] if len(row) > BARCODE_IDX else ""
+                cell_name = row[NAME_IDX] if len(row) > NAME_IDX else ""
+                # باركود: مطابقة 100%
+                if q_barcode and cell_barcode and q_barcode == cell_barcode:
+                    exact_barcode_matches.append((idx, row))
                 # اسم: تطابق جزئي غير حساس لحالة الأحرف
-                elif row_name and q.lower() in row_name.lower():
-                    name_matches.append((i, row))
+                if q_name and cell_name and q_name in cell_name.lower():
+                    name_matches.append((idx, row))
 
-            # عرض النتائج
+            # عرض النتائج حسب الأولوية: باركود أولاً
             if exact_barcode_matches:
                 st.success(f"تم العثور على {len(exact_barcode_matches)} نتيجة مطابقة للباركود (مطابقة 100%).")
-                # عرض كل صف كامل كجدول
-                rows_to_show = []
+                # عرض كل نتيجة كصف مفصل
                 for r_idx, r in exact_barcode_matches:
-                    display = {"صف": r_idx}
-                    # ضم كل خلايا الصف في أعمدة مفصولة
-                    for col_idx, cell in enumerate(r, start=1):
-                        display[f"عمود {col_idx}"] = cell
-                    rows_to_show.append(display)
-                st.table(rows_to_show)
+                    st.markdown(f"**صف {r_idx}**")
+                    # عرض جدول صغير للصف
+                    display = {}
+                    # استخدم رؤوس الأعمدة إن وجدت وإلا استخدم عمود رقم
+                    for col_i, cell in enumerate(r, start=1):
+                        col_name = header[col_i-1] if len(header) >= col_i else f"عمود {col_i}"
+                        display[col_name] = cell
+                    st.table([display])
             elif name_matches:
                 st.success(f"تم العثور على {len(name_matches)} نتيجة تطابق بالاسم.")
-                rows_to_show = []
+                # بناء خيارات للاختيار
+                options = []
                 for r_idx, r in name_matches:
-                    display = {"صف": r_idx}
-                    for col_idx, cell in enumerate(r, start=1):
-                        display[f"عمود {col_idx}"] = cell
-                    rows_to_show.append(display)
-                st.table(rows_to_show)
+                    nm = r[NAME_IDX] if len(r) > NAME_IDX else "(بدون اسم)"
+                    bc = r[BARCODE_IDX] if len(r) > BARCODE_IDX else ""
+                    options.append(f"صف {r_idx} - {nm} - باركود: {bc}")
+                choice = st.selectbox("اختر المنتج لعرض التفاصيل:", options)
+                if choice:
+                    try:
+                        chosen_row_idx = int(choice.split("-")[0].strip().split()[1])
+                        # استخرج الصف من name_matches أو من ورقة العمل مباشرة
+                        # نقرأ الصف الحالي من الورقة لضمان أحدث بيانات
+                        row_values = ws.row_values(chosen_row_idx)
+                        display = {}
+                        for col_i, cell in enumerate(row_values, start=1):
+                            col_name = header[col_i-1] if len(header) >= col_i else f"عمود {col_i}"
+                            display[col_name] = cell
+                        st.markdown(f"**تفاصيل المنتج في صف {chosen_row_idx}:**")
+                        st.table([display])
+                    except Exception as ex:
+                        st.error("حدث خطأ أثناء عرض تفاصيل المنتج: " + str(ex))
             else:
                 st.info("لم يتم العثور على نتائج مطابقة.")
         except Exception as e:
-            st.error("حدث خطأ أثناء البحث: " + str(e))
+            st.error("حدث خطأ أثناء الاتصال بالشيت أو أثناء البحث: " + str(e))
