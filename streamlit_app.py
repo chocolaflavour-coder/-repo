@@ -1,14 +1,13 @@
 import base64
 from datetime import datetime, timedelta, timezone
-import io
 import re
 from google.auth.exceptions import GoogleAuthError
 from google.oauth2 import service_account
 import gspread
-from PIL import Image
 import streamlit as st
+import streamlit.components.v1 as components
 
-# -------------------- تهيئة الصفحة وتنسيق الجوال (CSS) --------------------
+# -------------------- تهيئة الصفحة وتنسيق الواجهة (CSS) --------------------
 st.set_page_config(
     page_title="إدارة المنتجات", layout="centered", initial_sidebar_state="collapsed"
 )
@@ -20,6 +19,12 @@ st.markdown(
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
+    
+    /* تنسيق المحاذاة بين حقل الباركود وأيقونة الكاميرا */
+    div[data-testid="stHorizontalBlock"] {
+        align-items: flex-end !important;
+        gap: 8px !important;
+    }
     
     /* تصميم بطاقات النتائج للجوال */
     .product-card {
@@ -39,7 +44,6 @@ st.markdown(
         font-weight: bold;
     }
     .stButton>button {
-        width: 100%;
         border-radius: 10px;
         font-weight: bold;
     }
@@ -47,54 +51,6 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
-
-
-# -------------------- دالة قراءة الباركود من الصورة --------------------
-def decode_barcode_from_image(image_file):
-    """قراءة وفك تشفير الباركود من الصورة الملتقطة بواسطة الكاميرا"""
-    if image_file is None:
-        return None
-
-    # 1. التجربة عبر مكتبة zxing-cpp (الأسرع والأدق)
-    try:
-        import zxingcpp
-
-        image_file.seek(0)
-        img = Image.open(image_file)
-        results = zxingcpp.read_barcodes(img)
-        if results:
-            return results[0].text
-    except Exception:
-        pass
-
-    # 2. التجربة عبر pyzbar كخيار احتياطي
-    try:
-        from pyzbar.pyzbar import decode
-
-        image_file.seek(0)
-        img = Image.open(image_file)
-        decoded_objects = decode(img)
-        if decoded_objects:
-            return decoded_objects[0].data.decode("utf-8")
-    except Exception:
-        pass
-
-    # 3. التجربة عبر OpenCV كخيار احتياطي ثالث
-    try:
-        import cv2
-        import numpy as np
-
-        image_file.seek(0)
-        file_bytes = np.asarray(bytearray(image_file.read()), dtype=np.uint8)
-        cv_img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        detector = cv2.barcode.BarcodeDetector()
-        retval, decoded_info, _, _ = detector.detectAndDecode(cv_img)
-        if retval and decoded_info and decoded_info[0]:
-            return decoded_info[0]
-    except Exception:
-        pass
-
-    return None
 
 
 # -------------------- المصادقة والاتصال مع Google Sheets --------------------
@@ -190,7 +146,7 @@ def get_updates_sheet_in_same_spreadsheet(sh):
     return ws_updates
 
 
-# -------------------- الدوال المساعدة --------------------
+# -------------------- الدوال المساعدة والـ Callbacks --------------------
 def split_barcodes(cell_text):
     if not cell_text:
         return []
@@ -211,8 +167,8 @@ def parse_existing_date(date_str):
 
 def search_products(q_barcode="", q_name=""):
     """دالة تنفيذ البحث في جوجل شيت"""
-    q_barcode = q_barcode.strip()
-    q_name = q_name.strip().lower()
+    q_barcode = str(q_barcode).strip()
+    q_name = str(q_name).strip().lower()
 
     if not q_barcode and not q_name:
         st.info("الرجاء إدخال باركود أو اسم المنتج ثم اضغط بحث.")
@@ -240,12 +196,47 @@ def search_products(q_barcode="", q_name=""):
 
         st.session_state["search_matches"] = matches
         if not matches:
-            st.warning("لم يتم العثور على نتائج مطابقة في الجدول.")
+            st.warning(
+                f"لم يتم العثور على نتائج مطابقة للبحث: {q_barcode or q_name}"
+            )
     except Exception as e:
         st.error("فشل الاتصال بشيت المنتجات: " + str(e))
 
 
-# -------------------- حالة الجلسة (Session State) --------------------
+def toggle_camera_callback():
+    st.session_state["show_camera"] = not st.session_state.get(
+        "show_camera", False
+    )
+
+
+def select_product_callback(r_idx, r, qty):
+    st.session_state["chosen_row"] = (r_idx, r)
+    try:
+        st.session_state["temp_qty"] = (
+            int(float(str(qty).strip())) if str(qty).strip() else 0
+        )
+    except ValueError:
+        st.session_state["temp_qty"] = 0
+
+
+def adjust_qty_callback(delta):
+    st.session_state["temp_qty"] = max(0, st.session_state["temp_qty"] + delta)
+
+
+def cancel_edit_callback():
+    st.session_state["chosen_row"] = None
+
+
+def run_text_search_callback():
+    st.session_state["chosen_row"] = None
+    st.session_state["last_update"] = None
+    st.session_state["search_matches"] = []
+    bc = st.session_state.get("search_barcode_input", "")
+    nm = st.session_state.get("search_name_input", "")
+    search_products(q_barcode=bc, q_name=nm)
+
+
+# -------------------- تهيئة حالة الجلسة (Session State) --------------------
 if "chosen_row" not in st.session_state:
     st.session_state["chosen_row"] = None
 if "sh_id" not in st.session_state:
@@ -256,11 +247,36 @@ if "search_matches" not in st.session_state:
     st.session_state["search_matches"] = []
 if "temp_qty" not in st.session_state:
     st.session_state["temp_qty"] = 0
+if "show_camera" not in st.session_state:
+    st.session_state["show_camera"] = False
+if "search_barcode_input" not in st.session_state:
+    st.session_state["search_barcode_input"] = ""
 
-# -------------------- الواجهة الرئيسية --------------------
+# -------------------- التقاط الباركود من الكاميرا --------------------
+if hasattr(st, "query_params"):
+    scanned_val = st.query_params.get("scanned_code")
+    if scanned_val:
+        del st.query_params["scanned_code"]
+        st.session_state["search_barcode_input"] = scanned_val
+        st.session_state["show_camera"] = False
+        st.session_state["auto_scanned_barcode"] = scanned_val
+else:
+    qp = st.experimental_get_query_params()
+    if "scanned_code" in qp:
+        scanned_val = (
+            qp["scanned_code"][0]
+            if isinstance(qp["scanned_code"], list)
+            else qp["scanned_code"]
+        )
+        st.experimental_set_query_params()
+        st.session_state["search_barcode_input"] = scanned_val
+        st.session_state["show_camera"] = False
+        st.session_state["auto_scanned_barcode"] = scanned_val
+
+# -------------------- الواجهة الرئيسية (صفحة واحدة فقط) --------------------
 st.title("📱 إدارة وتحديث المنتجات")
 
-# عرض ملخص التحديث السابق إن وجد
+# عرض رسالة نجاح التحديث السابق إن وجد
 if st.session_state.get("last_update"):
     lu = st.session_state["last_update"]
     st.success("✅ تم تحديث بيانات المنتج بنجاح!")
@@ -269,46 +285,73 @@ if st.session_state.get("last_update"):
     st.write(f"**الكمية الجديدة:** {lu.get('qty','')}")
     st.markdown("---")
 
-# -------------------- التبويبات (بحث يدوي / كاميرا) --------------------
-tab_cam, tab_text = st.tabs(["📷 المسح بالكاميرا", "⌨️ البحث النصي"])
+# -------------------- قسم البحث الرئيسي --------------------
+if not st.session_state.get("chosen_row"):
+    st.markdown("### 🔍 البحث عن منتج")
 
-with tab_cam:
-    st.caption("وجه كاميرا الجوال نحو الباركود مباشرة لالتقاطه")
-    camera_file = st.camera_input("التقط صورة للباركود")
-
-    if camera_file:
-        with st.spinner("جاري قراءة الباركود من الصورة..."):
-            scanned_code = decode_barcode_from_image(camera_file)
-
-        if scanned_code:
-            st.success(f"🎯 تم قراءة الباركود: **{scanned_code}**")
-            # إجراء البحث فوراً بعد قراءة الباركود
-            st.session_state["chosen_row"] = None
-            st.session_state["last_update"] = None
-            search_products(q_barcode=scanned_code)
-        else:
-            st.error(
-                "❌ لم يتم التعرف على الباركود، يرجى تقريب الكاميرا وتحسين الإضاءة."
-            )
-
-with tab_text:
-    col1, col2 = st.columns(2)
-    with col1:
-        barcode_input = st.text_input(
-            "باركود (مطابق 100%)", key="search_barcode_input"
-        )
-    with col2:
-        name_input = st.text_input(
-            "اسم المنتج (بحث جزئي)", key="search_name_input"
+    # حقل الباركود وبجانبه زر الكاميرا مباشرة
+    col_bc, col_cam = st.columns([80, 20])
+    with col_bc:
+        st.text_input("الباركود (مطابق 100%)", key="search_barcode_input")
+    with col_cam:
+        st.button(
+            "📷",
+            key="toggle_cam_btn",
+            on_click=toggle_camera_callback,
+            help="افتح الكاميرا لمسح الباركود",
+            use_container_width=True,
         )
 
-    if st.button("🔍 بحث عن منتج"):
-        st.session_state["chosen_row"] = None
-        st.session_state["last_update"] = None
-        st.session_state["search_matches"] = []
-        search_products(q_barcode=barcode_input, q_name=name_input)
+    # شاشة الكاميرا (تظهر مباشرة تحت حقل الباركود عند الضغط على الأيقونة)
+    if st.session_state.get("show_camera"):
+        st.caption("📷 وجه كاميرا الجوال نحو الباركود لقراءته تلقائياً:")
+        scanner_code = """
+        <div id="reader" style="width: 100%; max-width: 400px; margin: auto;"></div>
+        <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+        <script>
+            function onScanSuccess(decodedText) {
+                try {
+                    html5QrcodeScanner.clear();
+                    const url = new URL(window.parent.location.href);
+                    url.searchParams.set('scanned_code', decodedText);
+                    window.parent.location.search = url.searchParams.toString();
+                } catch(e) {
+                    console.error("خطأ الكاميرا: ", e);
+                }
+            }
 
-# -------------------- عرض النتائج كبطاقات الجوال --------------------
+            let html5QrcodeScanner = new Html5QrcodeScanner(
+                "reader",
+                { 
+                    fps: 15, 
+                    qrbox: {width: 250, height: 150},
+                    rememberLastUsedCamera: true
+                },
+                false
+            );
+            html5QrcodeScanner.render(onScanSuccess);
+        </script>
+        """
+        components.html(scanner_code, height=360)
+
+    # حقل البحث باسم المنتج
+    st.text_input("اسم المنتج (بحث جزئي)", key="search_name_input")
+
+    # زر البحث الرئيسي
+    st.button(
+        "🔍 بحث عن منتج",
+        on_click=run_text_search_callback,
+        use_container_width=True,
+        type="primary",
+    )
+
+# تنفيذ البحث الآلي فور التقاط الباركود بالكاميرا
+if st.session_state.get("auto_scanned_barcode"):
+    scanned_bc = st.session_state.pop("auto_scanned_barcode")
+    st.success(f"🎯 تم مسح الباركود بنجاح: **{scanned_bc}**")
+    search_products(q_barcode=scanned_bc)
+
+# -------------------- عرض بطاقات نتائج البحث --------------------
 matches = st.session_state.get("search_matches", [])
 if matches and not st.session_state.get("chosen_row"):
     st.subheader("نتائج البحث:")
@@ -317,30 +360,28 @@ if matches and not st.session_state.get("chosen_row"):
         name = r[1] if len(r) > 1 else "بدون اسم"
         qty = r[3] if len(r) > 3 else "0"
 
-        col_info, col_btn = st.columns([3, 1])
-        with col_info:
-            st.markdown(
-                f"""
-            <div class="product-card">
-                <h4 style="margin:0; color:#1e1e1e;">{name}</h4>
-                <small style="color:#555;">الباركود: {bc} | الصف: {r_idx}</small><br>
-                <span class="badge-qty">الكمية الحالية: {qty}</span>
-            </div>
-            """,
-                unsafe_allow_html=True,
-            )
-        with col_btn:
-            if st.button("تحديث ✏️", key=f"select_btn_{r_idx}_{idx}"):
-                st.session_state["chosen_row"] = (r_idx, r)
-                try:
-                    st.session_state["temp_qty"] = (
-                        int(float(str(qty).strip())) if str(qty).strip() else 0
-                    )
-                except ValueError:
-                    st.session_state["temp_qty"] = 0
-                st.rerun()
+        st.markdown(
+            f"""
+        <div class="product-card">
+            <h4 style="margin:0 0 5px 0; color:#1e1e1e;">{name}</h4>
+            <div style="color:#555; font-size:13px; margin-bottom:8px;">الباركود: {bc} | الصف: {r_idx}</div>
+            <span class="badge-qty">الكمية الحالية: {qty}</span>
+        </div>
+        """,
+            unsafe_allow_html=True,
+        )
 
-# -------------------- واجهة التحديث والتحكم السريع --------------------
+        st.button(
+            "✏️ تعديل وتحديث هذا المنتج",
+            key=f"select_btn_{r_idx}_{idx}",
+            on_click=select_product_callback,
+            args=(r_idx, r, qty),
+            use_container_width=True,
+            type="primary",
+        )
+        st.write("")
+
+# -------------------- واجهة التحديث والتعديل --------------------
 if st.session_state.get("chosen_row"):
     row_idx, row_values = st.session_state["chosen_row"]
     BARCODE_IDX, NAME_IDX, EXPIRY_IDX, QTY_IDX = 0, 1, 2, 3
@@ -362,32 +403,40 @@ if st.session_state.get("chosen_row"):
     col_m10, col_m1, col_val, col_p1, col_p10 = st.columns(5)
 
     with col_m10:
-        if st.button("-10"):
-            st.session_state["temp_qty"] = max(
-                0, st.session_state["temp_qty"] - 10
-            )
-            st.rerun()
+        st.button(
+            "-10",
+            on_click=adjust_qty_callback,
+            args=(-10,),
+            use_container_width=True,
+        )
     with col_m1:
-        if st.button("-1"):
-            st.session_state["temp_qty"] = max(
-                0, st.session_state["temp_qty"] - 1
-            )
-            st.rerun()
+        st.button(
+            "-1",
+            on_click=adjust_qty_callback,
+            args=(-1,),
+            use_container_width=True,
+        )
     with col_val:
         st.markdown(
             f"<h3 style='text-align: center; margin:0;'>{st.session_state['temp_qty']}</h3>",
             unsafe_allow_html=True,
         )
     with col_p1:
-        if st.button("+1"):
-            st.session_state["temp_qty"] += 1
-            st.rerun()
+        st.button(
+            "+1",
+            on_click=adjust_qty_callback,
+            args=(1,),
+            use_container_width=True,
+        )
     with col_p10:
-        if st.button("+10"):
-            st.session_state["temp_qty"] += 10
-            st.rerun()
+        st.button(
+            "+10",
+            on_click=adjust_qty_callback,
+            args=(10,),
+            use_container_width=True,
+        )
 
-    # حقل إدخال يدوي اختياري للكمية
+    # حقل إدخال يدوي للكمية
     new_qty = st.number_input(
         "أو ادخل الكمية يدوياً",
         min_value=0,
@@ -403,7 +452,9 @@ if st.session_state.get("chosen_row"):
 
     col_save, col_cancel = st.columns(2)
     with col_save:
-        if st.button("💾 حفظ التحديث الآن", type="primary"):
+        if st.button(
+            "💾 حفظ التحديث الآن", type="primary", use_container_width=True
+        ):
             try:
                 gc = get_gspread_client()
                 sh = gc.open_by_key(st.session_state["sh_id"])
@@ -444,6 +495,6 @@ if st.session_state.get("chosen_row"):
                 st.error("حدث خطأ أثناء حفظ التحديثات: " + str(e))
 
     with col_cancel:
-        if st.button("❌ إلغاء"):
-            st.session_state["chosen_row"] = None
-            st.rerun()
+        st.button(
+            "❌ إلغاء", on_click=cancel_edit_callback, use_container_width=True
+        )
