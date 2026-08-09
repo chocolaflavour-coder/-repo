@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone, timedelta
 
 st.set_page_config(page_title="إدارة المنتجات - تحديث الصفوف", layout="centered")
-st.title("بحث وتحديث المنتجات (تحديث الصف الموجود)")
+st.title("بحث وتحديث المنتجات")
 
 # -------------------- مفاتيح وتهيئة --------------------
 def load_private_key():
@@ -105,22 +105,35 @@ def split_barcodes(cell_text):
     parts = re.split(r"\s+", cleaned.strip())
     return [p for p in parts if p]
 
-# -------------------- واجهة المستخدم --------------------
-st.header("ابحث بالباركود أو باسم المنتج")
-
-col1, col2 = st.columns(2)
-with col1:
-    barcode_input = st.text_input("باركود (مطابق 100%)")
-with col2:
-    name_input = st.text_input("اسم المنتج (بحث جزئي)")
-
-# حالة المنتج المختار في الجلسة
+# -------------------- حالة الجلسة الافتراضية --------------------
 if "chosen_row" not in st.session_state:
     st.session_state["chosen_row"] = None
+if "sh_id" not in st.session_state:
+    st.session_state["sh_id"] = None
+if "last_update" not in st.session_state:
+    st.session_state["last_update"] = None  # سيحمل dict: {"name":..., "expiry":..., "qty":...}
+
+# -------------------- عرض رسالة التحديث السابق (إن وُجد) فوق البحث فقط --------------------
+if st.session_state.get("last_update"):
+    lu = st.session_state["last_update"]
+    st.success("تم تحديث الإدخال بنجاح")
+    st.write(f"**اسم المنتج:** {lu.get('name','')}")
+    st.write(f"**تاريخ الصلاحية:** {lu.get('expiry','')}")
+    st.write(f"**الكمية:** {lu.get('qty','')}")
+    st.markdown("---")
+
+# -------------------- واجهة البحث --------------------
+st.header("ابحث بالباركود أو باسم المنتج")
+col1, col2 = st.columns(2)
+with col1:
+    barcode_input = st.text_input("باركود (مطابق 100%)", key="search_barcode")
+with col2:
+    name_input = st.text_input("اسم المنتج (بحث جزئي)", key="search_name")
 
 # زر البحث
 if st.button("بحث"):
     st.session_state["chosen_row"] = None
+    st.session_state["last_update"] = None  # امسح رسالة التحديث السابق عند بدء بحث جديد
     if (not barcode_input or not barcode_input.strip()) and (not name_input or not name_input.strip()):
         st.info("الرجاء إدخال باركود أو اسم المنتج ثم اضغط بحث.")
     else:
@@ -170,7 +183,7 @@ if st.button("بحث"):
                     nm = r[NAME_IDX] if len(r) > NAME_IDX else "(بدون اسم)"
                     bc = r[BARCODE_IDX] if len(r) > BARCODE_IDX else ""
                     options.append(f"صف {r_idx} - {nm} - باركود: {bc}")
-                choice = st.selectbox("اختر المنتج من النتائج المطابقة:", options)
+                choice = st.selectbox("اختر المنتج من النتائج المطابقة:", options, key="select_barcode")
                 if choice:
                     chosen_row_idx = int(choice.split("-")[0].strip().split()[1])
                     chosen_row = ws.row_values(chosen_row_idx)
@@ -181,7 +194,7 @@ if st.button("بحث"):
                 nm = r[NAME_IDX] if len(r) > NAME_IDX else "(بدون اسم)"
                 bc = r[BARCODE_IDX] if len(r) > BARCODE_IDX else ""
                 options.append(f"صف {r_idx} - {nm} - باركود: {bc}")
-            choice = st.selectbox("اختر المنتج من النتائج:", options)
+            choice = st.selectbox("اختر المنتج من النتائج:", options, key="select_name")
             if choice:
                 chosen_row_idx = int(choice.split("-")[0].strip().split()[1])
                 chosen_row = ws.row_values(chosen_row_idx)
@@ -192,10 +205,12 @@ if st.button("بحث"):
         if chosen:
             st.session_state["chosen_row"] = chosen
             st.session_state["sh_id"] = sh.id
+            st.success("تم العثور على المنتج — يمكنك الآن تحديثه أدناه")
 
-# عرض حقول التحديث إذا يوجد منتج مختار
+# -------------------- إذا يوجد منتج مختار، اعرض ملخص واختيارات التحديث (لن تظهر بعد نجاح التحديث) --------------------
 if st.session_state.get("chosen_row"):
     try:
+        # أعد فتح الشيت لضمان صلاحية الكائنات
         gc = get_gspread_client()
         sh = gc.open_by_key(st.session_state["sh_id"])
         ws = sh.get_worksheet(0)
@@ -262,16 +277,20 @@ if st.session_state.get("chosen_row"):
                 next_index = len(vals) + 1
                 ws_updates.insert_row(new_update_row, index=next_index)
 
-            # **النتيجة المطلوبة فقط**: رسالة نجاح وقيم المنتج
-            st.success("تم تحديث الإدخال بنجاح")
-            st.write(f"**اسم المنتج:** {product_name_for_log}")
-            st.write(f"**تاريخ الصلاحية:** {expiry_str}")
-            st.write(f"**الكمية:** {new_qty_str}")
+            # احفظ ملخص التحديث في الجلسة لعرضه فوق البحث
+            st.session_state["last_update"] = {
+                "name": product_name_for_log,
+                "expiry": expiry_str,
+                "qty": new_qty_str
+            }
 
-            # إعادة تهيئة الحالة لبحث جديد
+            # إعادة تهيئة الحالة لعرض صفحة البحث فقط
             st.session_state["chosen_row"] = None
             if "sh_id" in st.session_state:
                 del st.session_state["sh_id"]
+
+            # أعد تحميل الصفحة (اختياري) أو ببساطة عرض رسالة النجاح (نستخدم إعادة تشغيل بسيطة)
+            st.experimental_rerun()
 
         except Exception as e:
             st.exception(e)
