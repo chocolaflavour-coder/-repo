@@ -3,6 +3,7 @@ import streamlit as st
 from google.oauth2 import service_account
 import gspread
 import base64
+from google.auth.exceptions import GoogleAuthError
 
 st.set_page_config(page_title="بحث المنتجات", layout="centered")
 st.title("بحث المنتجات")
@@ -39,19 +40,36 @@ def get_gspread_client():
     missing = [k for k, v in info.items() if not v]
     if missing:
         raise RuntimeError("متغيرات مفقودة في Secrets: " + ", ".join(missing))
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    return gspread.authorize(creds)
+    # نستخدم نطاقين شائعين: Sheets للقراءة/الكتابة و Drive لو احتجنا صلاحيات إضافية لاحقاً
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    try:
+        creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+        return gspread.authorize(creds)
+    except GoogleAuthError as gae:
+        raise RuntimeError("خطأ في المصادقة: " + str(gae))
+    except Exception as e:
+        raise RuntimeError("فشل إنشاء عميل gspread: " + str(e))
 
 # --- فتح جدول باسم "المنتجات" وجلب البيانات (تجاهل رأس العمود) ---
 def open_products_sheet():
     gc = get_gspread_client()
-    # افتح الملف باسم "المنتجات"
-    sh = gc.open("المنتجات")
+    try:
+        sh = gc.open("المنتجات")
+    except Exception as e:
+        # حاول فتح بالـ key إذا كان موجودًا في Secrets كبديل
+        sheet_key = st.secrets.get("TEST_SHEET_ID")
+        if sheet_key:
+            try:
+                sh = gc.open_by_key(sheet_key)
+            except Exception as e2:
+                raise RuntimeError("فشل فتح الشيت باسم 'المنتجات' وبالمفتاح: " + str(e2))
+        else:
+            raise RuntimeError("فشل فتح الشيت باسم 'المنتجات' ولم يتم توفير TEST_SHEET_ID. الخطأ: " + str(e))
     ws = sh.get_worksheet(0)
     all_values = ws.get_all_values()
-    # افترض أن الصف الأول هو رأس الأعمدة، لذا نأخذ من الصف الثاني فصاعدًا
     header = all_values[0] if len(all_values) >= 1 else []
     rows = all_values[1:] if len(all_values) >= 2 else []
     return ws, header, rows, sh
@@ -93,19 +111,15 @@ if st.button("بحث"):
             # عرض النتائج حسب الأولوية: باركود أولاً
             if exact_barcode_matches:
                 st.success(f"تم العثور على {len(exact_barcode_matches)} نتيجة مطابقة للباركود (مطابقة 100%).")
-                # عرض كل نتيجة كصف مفصل
                 for r_idx, r in exact_barcode_matches:
                     st.markdown(f"**صف {r_idx}**")
-                    # عرض جدول صغير للصف
                     display = {}
-                    # استخدم رؤوس الأعمدة إن وجدت وإلا استخدم عمود رقم
                     for col_i, cell in enumerate(r, start=1):
                         col_name = header[col_i-1] if len(header) >= col_i else f"عمود {col_i}"
                         display[col_name] = cell
                     st.table([display])
             elif name_matches:
                 st.success(f"تم العثور على {len(name_matches)} نتيجة تطابق بالاسم.")
-                # بناء خيارات للاختيار
                 options = []
                 for r_idx, r in name_matches:
                     nm = r[NAME_IDX] if len(r) > NAME_IDX else "(بدون اسم)"
@@ -115,8 +129,6 @@ if st.button("بحث"):
                 if choice:
                     try:
                         chosen_row_idx = int(choice.split("-")[0].strip().split()[1])
-                        # استخرج الصف من name_matches أو من ورقة العمل مباشرة
-                        # نقرأ الصف الحالي من الورقة لضمان أحدث بيانات
                         row_values = ws.row_values(chosen_row_idx)
                         display = {}
                         for col_i, cell in enumerate(row_values, start=1):
@@ -128,5 +140,10 @@ if st.button("بحث"):
                         st.error("حدث خطأ أثناء عرض تفاصيل المنتج: " + str(ex))
             else:
                 st.info("لم يتم العثور على نتائج مطابقة.")
+        except RuntimeError as re:
+            # رسائل واضحة للمستخدم حول المصادقة أو فتح الشيت
+            st.error("حدث خطأ أثناء الاتصال بالشيت أو أثناء البحث: " + str(re))
+            # نصيحة سريعة للمستخدم
+            st.info("تأكد أن: 1) تم تمكين Google Sheets API في مشروع Google Cloud، 2) تمت مشاركة الشيت مع عنوان البريد الخاص بالحساب الخدمي (client_email)، 3) القيم في Streamlit Secrets صحيحة.")
         except Exception as e:
-            st.error("حدث خطأ أثناء الاتصال بالشيت أو أثناء البحث: " + str(e))
+            st.error("حدث خطأ غير متوقع: " + str(e))
