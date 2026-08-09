@@ -65,8 +65,9 @@
     }
 
     function sendValueToStreamlit(value) {
+      // إجبار القيمة أن تكون نص فقط
       sendMessageToStreamlitClient("streamlit:setComponentValue", {
-        value: value,
+        value: String(value || ""),
         dataType: "json",
       });
     }
@@ -76,15 +77,18 @@
 
     var html5Qrcode = new Html5Qrcode("reader", { verbose: false });
 
-    function onScanSuccess(decodedText) {
+    function onScanSuccess(decodedText, decodedResult) {
       if (!scanning) return;
       scanning = false;
+
+      // إجبار القيمة أن تكون نص فقط مهما كان نوعها
+      const pureText = String(decodedText || decodedResult?.text || "");
 
       statusDiv.innerText = "✅ تم قراءة الباركود";
 
       html5Qrcode.stop()
-        .then(() => sendValueToStreamlit(decodedText))
-        .catch(() => sendValueToStreamlit(decodedText));
+        .then(() => sendValueToStreamlit(pureText))
+        .catch(() => sendValueToStreamlit(pureText));
     }
 
     function onScanFailure() {
