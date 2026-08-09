@@ -12,33 +12,35 @@
         font-family: -apple-system, "Segoe UI", Tahoma, sans-serif;
         direction: rtl;
         overflow: hidden;
+        height: 100%;
+      }
+      #container {
+        width: 100%;
+        max-width: 450px;
+        margin: 0 auto;
+        padding: 5px;
+        box-sizing: border-box;
       }
       #reader {
         width: 100%;
-        max-width: 500px; /* يمنع تمدد الكاميرا بشكل مفرط على الشاشات الكبيرة */
-        margin: 0 auto;
         border-radius: 12px;
         overflow: hidden;
-        background: #f0f0f0;
-      }
-      /* تحسين أبعاد الفيديو داخل القارئ */
-      #reader video {
-        width: 100% !important;
-        height: auto !important;
-        object-fit: cover;
+        background: #000; /* خلفية سوداء تظهر فورًا لمنع الوميض الأبيض */
       }
       #status {
         text-align: center;
         padding: 12px 4px;
         font-size: 15px;
         font-weight: bold;
-        color: #444;
+        color: #333;
       }
     </style>
   </head>
   <body>
-    <div id="reader"></div>
-    <div id="status">⏳ جاري تشغيل الكاميرا...</div>
+    <div id="container">
+      <div id="reader"></div>
+      <div id="status">⏳ جاري تشغيل الكاميرا...</div>
+    </div>
 
     <script>
       // -------------------- بروتوكول Streamlit الرسمي --------------------
@@ -51,10 +53,9 @@
         sendMessageToStreamlitClient("streamlit:componentReady", { apiVersion: 1 });
       }
 
-      function setFrameHeight() {
-        // حساب الارتفاع الفعلي للصفحة بالكامل ليتناسب مع حجم الكاميرا
-        var h = document.documentElement.scrollHeight || 450;
-        sendMessageToStreamlitClient("streamlit:setFrameHeight", { height: h });
+      function setFixedFrameHeight() {
+        // تحديد ارتفاع ثابت وكافي لمنع التقطيع والوميض تمامًا في Streamlit
+        sendMessageToStreamlitClient("streamlit:setFrameHeight", { height: 480 });
       }
 
       function sendValueToStreamlit(value) {
@@ -67,74 +68,44 @@
       var statusDiv = document.getElementById("status");
       var scanning = true;
 
-      var formatsToSupport = [
-        Html5QrcodeSupportedFormats.QR_CODE,
-        Html5QrcodeSupportedFormats.AZTEC,
-        Html5QrcodeSupportedFormats.DATA_MATRIX,
-        Html5QrcodeSupportedFormats.PDF_417,
-        Html5QrcodeSupportedFormats.EAN_13,
-        Html5QrcodeSupportedFormats.EAN_8,
-        Html5QrcodeSupportedFormats.UPC_A,
-        Html5QrcodeSupportedFormats.UPC_E,
-        Html5QrcodeSupportedFormats.CODE_128,
-        Html5QrcodeSupportedFormats.CODE_39,
-        Html5QrcodeSupportedFormats.CODE_93,
-        Html5QrcodeSupportedFormats.CODABAR,
-        Html5QrcodeSupportedFormats.ITF,
-      ];
-
-      var html5Qrcode = new Html5Qrcode("reader", {
-        formatsToSupport: formatsToSupport,
-        verbose: false,
-      });
+      var html5Qrcode = new Html5Qrcode("reader", { verbose: false });
 
       function onScanSuccess(decodedText) {
         if (!scanning) return;
         scanning = false;
         statusDiv.innerText = "✅ تم قراءة الباركود";
-        html5Qrcode
-          .stop()
-          .then(function () {
-            sendValueToStreamlit(decodedText);
-          })
-          .catch(function () {
-            sendValueToStreamlit(decodedText);
-          });
+        html5Qrcode.stop().then(function () {
+          sendValueToStreamlit(decodedText);
+        }).catch(function () {
+          sendValueToStreamlit(decodedText);
+        });
       }
 
       function onScanFailure() {
-        // تجاهل الأخطاء المستمرة أثناء البحث عن كود
+        // تجاهل طبيعي أثناء الفحص وظهور الكود
       }
 
-      // إعدادات الكاميرا محسنة الحجم والأبعاد
+      // إعدادات مرنة جداً لمنع الوميض والتعارض مع تعريفات كاميرا الهاتف
       var config = {
-        fps: 15, // زيادة عدد الإطارات لجعل الفحص أسرع وأسلس
-        qrbox: function(viewfinderWidth, viewfinderHeight) {
-          // جعل صندوق الفحص المربع يتناسب ديناميكيًا وحجمه ممتاز
-          var minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-          var boxSize = Math.floor(minEdge * 0.75);
-          if (boxSize < 200) boxSize = 200;
-          return { width: boxSize, height: boxSize };
-        },
-        aspectRatio: 1.0 // إجبار الكاميرا على اتخاذ شكل مربع أو متناسق بدلاً من شريط
+        fps: 10,
+        qrbox: { width: 250, height: 250 } // صندوق فحص مربع وواضح وثابت
       };
 
-      // تشغيل الكاميرا
+      // تشغيل الكاميرا الخلفية
       html5Qrcode
         .start({ facingMode: "environment" }, config, onScanSuccess, onScanFailure)
         .then(function () {
           statusDiv.innerText = "📡 وجّه الكاميرا نحو الباركود...";
-          // تحديث الارتفاع فورًا بعد تشغيل الكاميرا للتخلص من شكل الشريطة
-          setTimeout(setFrameHeight, 300); 
+          setFixedFrameHeight(); // ضبط المساحة فوراً بعد استقرار الكاميرا
         })
         .catch(function (err) {
           statusDiv.innerText = "⚠️ تعذّر تشغيل الكاميرا: " + err;
-          setFrameHeight();
+          setFixedFrameHeight();
         });
 
       window.addEventListener("load", function () {
         notifyReady();
-        setTimeout(setFrameHeight, 500);
+        setFixedFrameHeight();
       });
       notifyReady();
     </script>
