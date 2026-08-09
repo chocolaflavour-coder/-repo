@@ -20,13 +20,13 @@ st.markdown(
     footer {visibility: hidden;}
     header {visibility: hidden;}
     
-    /* تنسيق محاذاة حقل الباركود وزر الكاميرا على الجوال */
+    /* محاذاة حقل الباركود وزر الكاميرا على الجوال */
     div[data-testid="stHorizontalBlock"] {
         align-items: flex-end !important;
         gap: 8px !important;
     }
     
-    /* تصميم بطاقات نتائج البحث */
+    /* تصميم بطاقات النتائج */
     .product-card {
         background-color: #f8f9fa;
         border-radius: 12px;
@@ -300,59 +300,97 @@ if not st.session_state.get("chosen_row"):
             use_container_width=True,
         )
 
-    # مكون الكاميرا المخصص ومتوافق 100% مع Safari و iOS
+    # محرك المسح المباشر المخصص والتلقائي لمتصفح Safari و آيفون
     if st.session_state.get("show_camera"):
-        st.caption(
-            "📷 اضغط على الزر الأزرق أدناه لفتح كاميرا آيفون مباشرة لالتقاط الباركود:"
-        )
         scanner_code = """
         <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
         
-        <div style="text-align: center; margin: 10px 0;">
-            <label for="qr-file-input" style="
-                background-color: #007bff; 
+        <div id="camera-box" style="text-align: center; margin: 10px 0;">
+            <button id="start-btn" onclick="startScanner()" style="
+                background-color: #28a745; 
                 color: white; 
                 padding: 14px 20px; 
                 border-radius: 10px; 
                 font-weight: bold; 
-                display: block; 
-                cursor: pointer;
+                border: none;
+                width: 100%;
                 font-size: 16px;
+                cursor: pointer;
                 box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             ">
-                📸 فتح كاميرا الجوال لالتقاط الباركود
-            </label>
-            <input type="file" id="qr-file-input" accept="image/*" capture="environment" style="display: none;" onchange="scanBarcodeImage(this)">
-            <div id="scan-status" style="margin-top:10px; font-size:14px; font-weight:bold; color:#333;"></div>
+                🎥 بدء المسح المباشر بالكاميرا
+            </button>
+            <div id="reader" style="width: 100%; max-width: 400px; margin: 10px auto 0 auto; border-radius: 12px; overflow: hidden;"></div>
+            <div id="scan-status" style="margin-top:8px; font-size:14px; font-weight:bold; color:#333;"></div>
         </div>
-        <div id="reader-hidden" style="display:none;"></div>
 
         <script>
-            function scanBarcodeImage(input) {
-                if (!input.files || input.files.length === 0) return;
-                const file = input.files[0];
-                const statusDiv = document.getElementById('scan-status');
-                statusDiv.innerHTML = "⏳ جاري قراءة الباركود...";
-                
+            let html5QrCode = null;
+
+            function startScanner() {
+                const btn = document.getElementById('start-btn');
+                const status = document.getElementById('scan-status');
+                btn.style.display = 'none';
+                status.innerHTML = "⏳ جاري تشغيل الكاميرا المباشرة...";
+
+                html5QrCode = new Html5Qrcode("reader");
+
+                const config = { 
+                    fps: 15, 
+                    qrbox: { width: 260, height: 160 },
+                    aspectRatio: 1.333333
+                };
+
+                html5QrCode.start(
+                    { facingMode: "environment" }, 
+                    config, 
+                    onScanSuccess,
+                    onScanFailure
+                ).then(() => {
+                    status.innerHTML = "🎯 وجه الكاميرا نحو الباركود لقراءته تلقائياً";
+                    // التوافق المباشر مع متصفح Safari على iOS
+                    const videoElem = document.querySelector("#reader video");
+                    if (videoElem) {
+                        videoElem.setAttribute("playsinline", "true");
+                        videoElem.setAttribute("webkit-playsinline", "true");
+                    }
+                }).catch(err => {
+                    status.innerHTML = "❌ تعذر فتح الكاميرا المباشرة: يرجى السماح بالكاميرا في Safari.";
+                    btn.style.display = 'block';
+                    btn.innerText = "🔄 إعادة محاولة فتح الكاميرا";
+                });
+            }
+
+            function onScanSuccess(decodedText) {
+                const status = document.getElementById('scan-status');
+                status.innerHTML = "✅ تم القراءة تلقائياً: " + decodedText;
+                if (html5QrCode) {
+                    html5QrCode.stop().then(() => {
+                        sendResult(decodedText);
+                    }).catch(() => {
+                        sendResult(decodedText);
+                    });
+                } else {
+                    sendResult(decodedText);
+                }
+            }
+
+            function onScanFailure(error) {
+                // استمرار المسح عند كل إطار
+            }
+
+            function sendResult(code) {
                 try {
-                    const html5QrCode = new Html5Qrcode("reader-hidden");
-                    html5QrCode.scanFile(file, false)
-                        .then(decodedText => {
-                            statusDiv.innerHTML = "✅ تم القراءة: " + decodedText;
-                            const url = new URL(window.parent.location.href);
-                            url.searchParams.set('scanned_code', decodedText);
-                            window.parent.location.search = url.searchParams.toString();
-                        })
-                        .catch(err => {
-                            statusDiv.innerHTML = "❌ تعذر قراءة الباركود. يرجى التقاط صورة أقرب وأوضح للباركود.";
-                        });
+                    const url = new URL(window.parent.location.href);
+                    url.searchParams.set('scanned_code', code);
+                    window.parent.location.search = url.searchParams.toString();
                 } catch(e) {
-                    statusDiv.innerHTML = "❌ حدث خطأ أثناء التحليل: " + e.message;
+                    console.error("خطأ التوجيه: ", e);
                 }
             }
         </script>
         """
-        components.html(scanner_code, height=130)
+        components.html(scanner_code, height=380)
 
     # حقل اسم المنتج
     st.text_input("اسم المنتج (بحث جزئي)", key="search_name_input")
