@@ -5,7 +5,7 @@ import gspread
 import base64
 from google.auth.exceptions import GoogleAuthError
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 st.set_page_config(page_title="إدارة المنتجات - تحديث الصفوف", layout="centered")
 st.title("بحث وتحديث المنتجات (تحديث الصف الموجود)")
@@ -114,9 +114,9 @@ with col1:
 with col2:
     name_input = st.text_input("اسم المنتج (بحث جزئي)")
 
-# متغيرات لحفظ حالة المنتج المختار
+# حالة المنتج المختار في الجلسة
 if "chosen_row" not in st.session_state:
-    st.session_state["chosen_row"] = None  # (row_idx, row_values)
+    st.session_state["chosen_row"] = None
 
 # زر البحث
 if st.button("بحث"):
@@ -193,22 +193,18 @@ if st.button("بحث"):
             st.info("لم يتم العثور على نتائج مطابقة.")
 
         if chosen:
-            # خزّن المنتج المختار في session_state لعرض حقول التحديث أسفل البحث
             st.session_state["chosen_row"] = chosen
-            st.session_state["gc"] = gc
-            st.session_state["sh_id"] = sh.id  # للاطلاع إن احتجنا لاحقًا
-            st.success("اختر المنتج الآن لتحديث الكمية وتاريخ الصلاحية.")
+            st.session_state["sh_id"] = sh.id
+            st.success("اختر المنتج الآن لتحديث الكمية وتاريخ الصلاحية")
 
-# إذا يوجد منتج مختار، اعرض حقول التحديث مباشرة بعد البحث
+# عرض حقول التحديث إذا يوجد منتج مختار
 if st.session_state.get("chosen_row"):
     try:
-        gc = st.session_state.get("gc")
-        # أعد فتح الشيت لضمان صلاحية الكائنات (gspread objects قد لا تكون قابلة للتخزين عبر جلسات)
+        # أعد إنشاء العميل والـ spreadsheet لضمان صلاحية الكائنات
         gc = get_gspread_client()
         sh = gc.open_by_key(st.session_state["sh_id"])
         ws = sh.get_worksheet(0)
     except Exception:
-        # كحل احتياطي حاول فتح بالاسم
         try:
             gc, sh, ws, header, rows = open_products_sheet()
         except Exception as e:
@@ -238,7 +234,6 @@ if st.session_state.get("chosen_row"):
         st.write("**الصف**")
         st.write(row_idx)
 
-    # حقول التحديث التي طلبتها تظهر فوراً
     try:
         default_qty = int(current_qty) if str(current_qty).strip().isdigit() else 0
     except Exception:
@@ -253,7 +248,7 @@ if st.session_state.get("chosen_row"):
             new_qty_str = str(new_qty)
             st.info(f"محاولة تحديث الصف {row_idx} -> تاريخ: {expiry_str}، كمية: {new_qty_str}")
 
-            # قراءة الصف قبل التحديث (تشخيص)
+            # قراءة الصف قبل التحديث
             try:
                 before_row = ws.row_values(row_idx)
                 st.write("قيم الصف قبل التحديث:", before_row)
@@ -275,7 +270,7 @@ if st.session_state.get("chosen_row"):
                 st.error("فشل تحديث الكمية: " + str(e))
                 raise
 
-            # قراءة الصف بعد التحديث (تشخيص)
+            # قراءة الصف بعد التحديث
             try:
                 after_row = ws.row_values(row_idx)
                 st.write("قيم الصف بعد التحديث:", after_row)
@@ -285,7 +280,9 @@ if st.session_state.get("chosen_row"):
             # تسجيل التحديث في ورقة "التحديثات" داخل نفس الملف
             try:
                 ws_updates = get_updates_sheet_in_same_spreadsheet(sh)
-                update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # توقيت السعودية UTC+3
+                sa_time = datetime.now(timezone(timedelta(hours=3)))
+                update_time = sa_time.strftime("%Y-%m-%d %H:%M:%S")
                 barcode_cell_value = current_barcode_cell or ws.cell(row_idx, BARCODE_IDX + 1).value or ""
                 product_name_for_log = current_name
                 barcode_for_log = barcode_cell_value
@@ -308,8 +305,11 @@ if st.session_state.get("chosen_row"):
                 st.error("حدث خطأ أثناء محاولة تسجيل السجل في ورقة 'التحديثات'.")
                 st.exception(e_updates)
 
-            # بعد النجاح أفرغ الاختيار حتى لا يتكرر التحديث بالضغط التالي
+            # رسالة نجاح واضحة للمستخدم وإتاحة بحث جديد
+            st.success("تم تحديث المنتج بنجاح. يمكنك الآن إجراء بحث جديد.")
             st.session_state["chosen_row"] = None
+            if "sh_id" in st.session_state:
+                del st.session_state["sh_id"]
 
         except Exception as e:
             st.exception(e)
