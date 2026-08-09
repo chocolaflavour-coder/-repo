@@ -157,10 +157,8 @@ if st.button("بحث"):
         chosen = None
 
         if exact_barcode_matches:
-            st.success(f"تم العثور على {len(exact_barcode_matches)} نتيجة مطابقة للباركود.")
             if len(exact_barcode_matches) == 1:
                 chosen = exact_barcode_matches[0]
-                st.markdown(f"**المنتج المختار: صف {chosen[0]}**")
                 display = {}
                 for col_i, cell in enumerate(chosen[1], start=1):
                     col_name = header[col_i-1] if len(header) >= col_i else f"عمود {col_i}"
@@ -178,7 +176,6 @@ if st.button("بحث"):
                     chosen_row = ws.row_values(chosen_row_idx)
                     chosen = (chosen_row_idx, chosen_row)
         elif name_matches:
-            st.success(f"تم العثور على {len(name_matches)} نتيجة تطابق بالاسم.")
             options = []
             for r_idx, r in name_matches:
                 nm = r[NAME_IDX] if len(r) > NAME_IDX else "(بدون اسم)"
@@ -195,12 +192,10 @@ if st.button("بحث"):
         if chosen:
             st.session_state["chosen_row"] = chosen
             st.session_state["sh_id"] = sh.id
-            st.success("اختر المنتج الآن لتحديث الكمية وتاريخ الصلاحية")
 
 # عرض حقول التحديث إذا يوجد منتج مختار
 if st.session_state.get("chosen_row"):
     try:
-        # أعد إنشاء العميل والـ spreadsheet لضمان صلاحية الكائنات
         gc = get_gspread_client()
         sh = gc.open_by_key(st.session_state["sh_id"])
         ws = sh.get_worksheet(0)
@@ -222,7 +217,7 @@ if st.session_state.get("chosen_row"):
     current_expiry = row_values[EXPIRY_IDX] if len(row_values) > EXPIRY_IDX else ""
     current_qty = row_values[QTY_IDX] if len(row_values) > QTY_IDX else ""
 
-    st.markdown("### تحديث سريع (يُحدّث نفس الصف ويُسجّل في ورقة التحديثات)")
+    st.markdown("### تحديث سريع")
     cols = st.columns(3)
     with cols[0]:
         st.write("**المنتج**")
@@ -246,67 +241,34 @@ if st.session_state.get("chosen_row"):
         try:
             expiry_str = new_expiry.strftime("%Y-%m-%d")
             new_qty_str = str(new_qty)
-            st.info(f"محاولة تحديث الصف {row_idx} -> تاريخ: {expiry_str}، كمية: {new_qty_str}")
-
-            # قراءة الصف قبل التحديث
-            try:
-                before_row = ws.row_values(row_idx)
-                st.write("قيم الصف قبل التحديث:", before_row)
-            except Exception as e:
-                st.warning("تعذر قراءة الصف قبل التحديث: " + str(e))
 
             # تحديث خلية تاريخ الصلاحية والكمية في نفس الصف
-            try:
-                ws.update_cell(row_idx, EXPIRY_IDX + 1, expiry_str)
-                st.success("تم تحديث تاريخ الصلاحية في الشيت الأصلي.")
-            except Exception as e:
-                st.error("فشل تحديث تاريخ الصلاحية: " + str(e))
-                raise
-
-            try:
-                ws.update_cell(row_idx, QTY_IDX + 1, new_qty_str)
-                st.success("تم تحديث الكمية في الشيت الأصلي.")
-            except Exception as e:
-                st.error("فشل تحديث الكمية: " + str(e))
-                raise
-
-            # قراءة الصف بعد التحديث
-            try:
-                after_row = ws.row_values(row_idx)
-                st.write("قيم الصف بعد التحديث:", after_row)
-            except Exception as e:
-                st.warning("تعذر قراءة الصف بعد التحديث: " + str(e))
+            ws.update_cell(row_idx, EXPIRY_IDX + 1, expiry_str)
+            ws.update_cell(row_idx, QTY_IDX + 1, new_qty_str)
 
             # تسجيل التحديث في ورقة "التحديثات" داخل نفس الملف
+            ws_updates = get_updates_sheet_in_same_spreadsheet(sh)
+            # توقيت السعودية UTC+3
+            sa_time = datetime.now(timezone(timedelta(hours=3)))
+            update_time = sa_time.strftime("%Y-%m-%d %H:%M:%S")
+            barcode_cell_value = current_barcode_cell or ws.cell(row_idx, BARCODE_IDX + 1).value or ""
+            product_name_for_log = current_name
+            barcode_for_log = barcode_cell_value
+            new_update_row = [barcode_for_log, product_name_for_log, expiry_str, new_qty_str, update_time]
             try:
-                ws_updates = get_updates_sheet_in_same_spreadsheet(sh)
-                # توقيت السعودية UTC+3
-                sa_time = datetime.now(timezone(timedelta(hours=3)))
-                update_time = sa_time.strftime("%Y-%m-%d %H:%M:%S")
-                barcode_cell_value = current_barcode_cell or ws.cell(row_idx, BARCODE_IDX + 1).value or ""
-                product_name_for_log = current_name
-                barcode_for_log = barcode_cell_value
-                new_update_row = [barcode_for_log, product_name_for_log, expiry_str, new_qty_str, update_time]
-                st.write("الصف الذي سأضيفه إلى 'التحديثات':", new_update_row)
-                try:
-                    ws_updates.append_row(new_update_row, value_input_option="USER_ENTERED")
-                    st.success("تم تسجيل التحديث في ورقة 'التحديثات'.")
-                except Exception as e_append:
-                    st.warning("فشل append_row على ورقة 'التحديثات': " + str(e_append))
-                    try:
-                        vals = ws_updates.get_all_values()
-                        next_index = len(vals) + 1
-                        ws_updates.insert_row(new_update_row, index=next_index)
-                        st.success(f"تم إدراج السجل في ورقة 'التحديثات' في الصف {next_index}.")
-                    except Exception as e_insert:
-                        st.error("فشل إدراج السجل في ورقة 'التحديثات' أيضاً.")
-                        st.exception(e_insert)
-            except Exception as e_updates:
-                st.error("حدث خطأ أثناء محاولة تسجيل السجل في ورقة 'التحديثات'.")
-                st.exception(e_updates)
+                ws_updates.append_row(new_update_row, value_input_option="USER_ENTERED")
+            except Exception:
+                vals = ws_updates.get_all_values()
+                next_index = len(vals) + 1
+                ws_updates.insert_row(new_update_row, index=next_index)
 
-            # رسالة نجاح واضحة للمستخدم وإتاحة بحث جديد
-            st.success("تم تحديث المنتج بنجاح. يمكنك الآن إجراء بحث جديد.")
+            # **النتيجة المطلوبة فقط**: رسالة نجاح وقيم المنتج
+            st.success("تم تحديث الإدخال بنجاح")
+            st.write(f"**اسم المنتج:** {product_name_for_log}")
+            st.write(f"**تاريخ الصلاحية:** {expiry_str}")
+            st.write(f"**الكمية:** {new_qty_str}")
+
+            # إعادة تهيئة الحالة لبحث جديد
             st.session_state["chosen_row"] = None
             if "sh_id" in st.session_state:
                 del st.session_state["sh_id"]
