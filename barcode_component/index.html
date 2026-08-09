@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font-family: -apple-system, "Segoe UI", Tahoma, sans-serif;
+    direction: rtl;
+  }
+  #reader {
+    width: 100%;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  #status {
+    text-align: center;
+    padding: 8px 4px 0 4px;
+    font-size: 14px;
+    color: #444;
+  }
+</style>
+</head>
+<body>
+  <div id="reader"></div>
+  <div id="status">⏳ جاري تشغيل الكاميرا...</div>
+
+  <script>
+    // -------------------- بروتوكول Streamlit الرسمي للتواصل مع صفحة Python --------------------
+    function sendMessageToStreamlitClient(type, data) {
+      var outData = Object.assign({ isStreamlitMessage: true, type: type }, data);
+      window.parent.postMessage(outData, "*");
+    }
+    function notifyReady() {
+      sendMessageToStreamlitClient("streamlit:componentReady", { apiVersion: 1 });
+    }
+    function setFrameHeight() {
+      var h = document.documentElement.scrollHeight || 380;
+      sendMessageToStreamlitClient("streamlit:setFrameHeight", { height: h });
+    }
+    function sendValueToStreamlit(value) {
+      sendMessageToStreamlitClient("streamlit:setComponentValue", {
+        value: value,
+        dataType: "json",
+      });
+    }
+
+    var statusDiv = document.getElementById("status");
+    var scanning = true;
+
+    // كل الصيغ المدعومة: ثنائية الأبعاد (QR / DataMatrix / Aztec / PDF417)
+    // وأحادية الأبعاد (EAN / UPC / Code128 / Code39 / Codabar / ITF...)
+    var formatsToSupport = [
+      Html5QrcodeSupportedFormats.QR_CODE,
+      Html5QrcodeSupportedFormats.AZTEC,
+      Html5QrcodeSupportedFormats.DATA_MATRIX,
+      Html5QrcodeSupportedFormats.PDF_417,
+      Html5QrcodeSupportedFormats.EAN_13,
+      Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.UPC_A,
+      Html5QrcodeSupportedFormats.UPC_E,
+      Html5QrcodeSupportedFormats.UPC_EAN_EXTENSION,
+      Html5QrcodeSupportedFormats.CODE_128,
+      Html5QrcodeSupportedFormats.CODE_39,
+      Html5QrcodeSupportedFormats.CODE_93,
+      Html5QrcodeSupportedFormats.CODABAR,
+      Html5QrcodeSupportedFormats.ITF,
+    ];
+
+    var html5Qrcode = new Html5Qrcode("reader", {
+      formatsToSupport: formatsToSupport,
+      verbose: false,
+    });
+
+    function onScanSuccess(decodedText) {
+      if (!scanning) return;
+      scanning = false;
+      statusDiv.innerText = "✅ تم قراءة الباركود";
+      html5Qrcode
+        .stop()
+        .then(function () {
+          sendValueToStreamlit(decodedText);
+        })
+        .catch(function () {
+          // حتى لو تعذر إيقاف الكاميرا بلطف، لا زلنا نرسل القيمة
+          sendValueToStreamlit(decodedText);
+        });
+    }
+
+    function onScanFailure() {
+      // يتم استدعاؤها باستمرار أثناء عدم العثور على باركود، وهذا طبيعي تمامًا — نتجاهلها
+    }
+
+    var config = {
+      fps: 10,
+      qrbox: { width: 260, height: 180 },
+    };
+
+    // تشغيل الكاميرا الخلفية فورًا بدون أي زر "بدء"
+    html5Qrcode
+      .start({ facingMode: "environment" }, config, onScanSuccess, onScanFailure)
+      .then(function () {
+        statusDiv.innerText = "📡 وجّه الكاميرا نحو الباركود...";
+      })
+      .catch(function (err) {
+        statusDiv.innerText = "⚠️ تعذّر تشغيل الكاميرا: " + err;
+      });
+
+    window.addEventListener("load", function () {
+      notifyReady();
+      setTimeout(setFrameHeight, 400);
+    });
+    notifyReady();
+  </script>
+</body>
+</html>
