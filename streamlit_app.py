@@ -242,4 +242,64 @@ if st.button("بحث"):
             current_barcode_cell = row_values[BARCODE_IDX] if len(row_values) > BARCODE_IDX else ""
             current_name = row_values[NAME_IDX] if len(row_values) > NAME_IDX else ""
             current_expiry = row_values[EXPIRY_IDX] if len(row_values) > EXPIRY_IDX else ""
-            current_qty = row_values[QTY_IDX] if len(row_values
+            current_qty = row_values[QTY_IDX] if len(row_values) > QTY_IDX else ""
+
+            st.markdown("### تحديث الكمية وتاريخ الصلاحية (إضافة صف جديد في 'المنتجات' + تسجيل في ورقة 'التحديثات')")
+            with st.form("update_product_form"):
+                try:
+                    default_qty = int(current_qty) if str(current_qty).strip().isdigit() else 0
+                except Exception:
+                    default_qty = 0
+                new_qty = st.number_input("الكمية الجديدة", min_value=0, step=1, value=default_qty)
+                new_expiry = st.date_input("تاريخ الصلاحية (اختر التاريخ)", value=datetime.today().date())
+                submit_update = st.form_submit_button("تطبيق التحديث (إضافة صف جديد)")
+
+                if submit_update:
+                    try:
+                        expiry_str = new_expiry.strftime("%Y-%m-%d")
+                        new_qty_str = str(new_qty)
+                        st.info(f"محاولة إضافة صف جديد في شيت 'المنتجات' -> تاريخ: {expiry_str}، كمية: {new_qty_str}")
+
+                        # أضف صفًا جديدًا في شيت المنتجات
+                        barcode_cell_value = current_barcode_cell or ""
+                        new_product_row = [barcode_cell_value, current_name, expiry_str, new_qty_str]
+                        try:
+                            ws.append_row(new_product_row, value_input_option="USER_ENTERED")
+                            st.success("تم إضافة صف جديد في شيت 'المنتجات'.")
+                        except Exception as e:
+                            st.error("فشل إضافة صف جديد في شيت 'المنتجات': " + str(e))
+                            raise
+
+                        # تسجيل في ورقة التحديثات داخل نفس الملف (مع تشخيص)
+                        try:
+                            ws_updates = get_updates_sheet_in_same_spreadsheet(sh)
+                            update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            new_update_row = [barcode_cell_value, current_name, expiry_str, new_qty_str, update_time]
+                            st.write("الصف الذي سأحاول إضافته إلى 'التحديثات':", new_update_row)
+                            try:
+                                ws_updates.append_row(new_update_row, value_input_option="USER_ENTERED")
+                                st.success("نجح: تم إضافة السجل في ورقة 'التحديثات'.")
+                            except Exception as e_append:
+                                st.warning("فشل append_row على ورقة 'التحديثات': " + str(e_append))
+                                try:
+                                    vals = ws_updates.get_all_values()
+                                    next_index = len(vals) + 1
+                                    ws_updates.insert_row(new_update_row, index=next_index)
+                                    st.success(f"نجح: تم إدراج السجل في ورقة 'التحديثات' في الصف {next_index}.")
+                                except Exception as e_insert:
+                                    st.error("فشل إدراج السجل في ورقة 'التحديثات' أيضاً.")
+                                    st.exception(e_insert)
+                        except Exception as e_updates:
+                            st.error("حدث خطأ أثناء محاولة تسجيل السجل في ورقة 'التحديثات'.")
+                            st.exception(e_updates)
+
+                        # عرض آخر صف في المنتجات للتأكيد
+                        try:
+                            all_vals_after = ws.get_all_values()
+                            last_row = all_vals_after[-1] if all_vals_after else []
+                            st.write("آخر صف في 'المنتجات' بعد الإضافة:", last_row)
+                        except Exception as e:
+                            st.warning("تعذر قراءة آخر صف بعد الإضافة: " + str(e))
+
+                    except Exception as e:
+                        st.exception(e)
