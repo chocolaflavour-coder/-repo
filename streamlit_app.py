@@ -6,7 +6,7 @@ from google.oauth2 import service_account
 import gspread
 import streamlit as st
 from PIL import Image
-from pyzbar.pyzbar import decode as decode_barcode
+import zxingcpp
 
 # -------------------- تهيئة الصفحة وتنسيق الواجهة (CSS) --------------------
 st.set_page_config(
@@ -321,13 +321,13 @@ if not st.session_state.get("chosen_row"):
         if camera_photo is not None:
             try:
                 image = Image.open(camera_photo)
-                found = decode_barcode(image)
+                found = zxingcpp.read_barcodes(image)
             except Exception as e:
                 found = []
                 st.error("تعذّرت معالجة الصورة: " + str(e))
 
             if found:
-                scanned_val = found[0].data.decode("utf-8")
+                scanned_val = found[0].text
                 st.session_state["search_barcode_input"] = scanned_val
                 st.session_state["show_camera"] = False
                 st.success(f"🎯 تم قراءة الباركود: **{scanned_val}**")
